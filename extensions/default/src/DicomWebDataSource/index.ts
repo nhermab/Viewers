@@ -16,7 +16,9 @@ import { retrieveStudyMetadata, deleteStudyMetadataPromise } from './retrieveStu
 import StaticWadoClient from './utils/StaticWadoClient';
 import getDirectURL from '../utils/getDirectURL';
 import { fixBulkDataURI } from './utils/fixBulkDataURI';
-import {HeadersInterface} from '@ohif/core/src/types/RequestHeaders';
+import { HeadersInterface } from '@ohif/core/src/types/RequestHeaders';
+import MadoParser from './MadoParser';
+import retrieveMadoMetadata, { getMadoManifestUrl } from './retrieveMadoMetadata';
 
 const { DicomMetaDictionary, DicomDict } = dcmjs.data;
 
@@ -158,7 +160,7 @@ function createDicomWebApi(dicomWebConfig: DicomWebConfig, servicesManager) {
        */
       generateWadoHeader = (options: HeaderOptions): HeadersInterface => {
         const authorizationHeader = getAuthorizationHeader();
-        if (options?.includeTransferSyntax!==false) {
+        if (options?.includeTransferSyntax !== false) {
           //Generate accept header depending on config params
           const formattedAcceptHeader = utils.generateAcceptHeader(
             dicomWebConfig.acceptHeader,
@@ -175,7 +177,7 @@ function createDicomWebApi(dicomWebConfig: DicomWebConfig, servicesManager) {
           // which the server expects Accept: application/dicom+json will still include that in the
           // header.
           return {
-            ...authorizationHeader
+            ...authorizationHeader,
           };
         }
       };
@@ -212,6 +214,10 @@ function createDicomWebApi(dicomWebConfig: DicomWebConfig, servicesManager) {
       studies: {
         mapParams: mapParams.bind(),
         search: async function (origParams) {
+          if ((dicomWebConfig as any).disableQido) {
+            console.warn('QIDO is disabled (disableQido=true). Returning empty study results.');
+            return [];
+          }
           qidoDicomWebClient.headers = getAuthorizationHeader();
           const { studyInstanceUid, seriesInstanceUid, ...mappedParams } =
             mapParams(origParams, {
@@ -226,17 +232,23 @@ function createDicomWebApi(dicomWebConfig: DicomWebConfig, servicesManager) {
         processResults: processResults.bind(),
       },
       series: {
-        // mapParams: mapParams.bind(),
         search: async function (studyInstanceUid) {
+          if ((dicomWebConfig as any).disableQido) {
+            console.warn('QIDO is disabled (disableQido=true). Returning empty series results.');
+            return [];
+          }
           qidoDicomWebClient.headers = getAuthorizationHeader();
           const results = await seriesInStudy(qidoDicomWebClient, studyInstanceUid);
 
           return processSeriesResults(results);
         },
-        // processResults: processResults.bind(),
       },
       instances: {
         search: (studyInstanceUid, queryParameters) => {
+          if ((dicomWebConfig as any).disableQido) {
+            console.warn('QIDO is disabled (disableQido=true). Returning empty instance results.');
+            return Promise.resolve([]);
+          }
           qidoDicomWebClient.headers = getAuthorizationHeader();
           return qidoSearch.call(
             undefined,
@@ -368,6 +380,21 @@ function createDicomWebApi(dicomWebConfig: DicomWebConfig, servicesManager) {
             throw new Error('Unable to query for SeriesMetadata without StudyInstanceUID');
           }
 
+          // In MADO/WADO-RS-only mode, the viewer should NOT attempt to retrieve metadata
+          // via the standard study/series metadata pipeline as that may trigger QIDO.
+          // Instead, rely on instances already inserted into DicomMetadataStore by madoMetadata.
+          if ((dicomWebConfig as any).disableQido) {
+            // defaultRouteInit calls retrieve.series.metadata with returnPromises:true and expects
+            // an array of "load promises" that expose a .start() method.
+            // In no-QIDO mode there is nothing to start, so return an empty list.
+            if (returnPromises) {
+              return [];
+            }
+
+            const existingSeries = DicomMetadataStore.getStudy(StudyInstanceUID)?.series || [];
+            return existingSeries;
+          }
+
           if (dicomWebConfig.enableStudyLazyLoad) {
             return implementation._retrieveSeriesMetadataAsync(
               StudyInstanceUID,
@@ -386,6 +413,57 @@ function createDicomWebApi(dicomWebConfig: DicomWebConfig, servicesManager) {
             sortFunction,
             madeInClient
           );
+        },
+
+        /**
+         * Loads study/series metadata using a MADO (DICOM KOS) manifest as the
+         * pre-defined query result (no QIDO-RS required).
+         */
+        madoMetadata: async ({ manifestUrl, madeInClient = false } = {}) => {
+          if (!manifestUrl) {
+            throw new Error('Unable to load MADO metadata without manifestUrl');
+          }
+
+          // Safe wrapper in case initialize() hasn't run yet for some reason.
+          const getAuthorizationHeaderSafe = () => {
+            try {
+              if (typeof getAuthorizationHeader === 'function') {
+                return getAuthorizationHeader();
+              }
+              // Fall back to whatever the auth service currently provides.
+              return userAuthenticationService?.getAuthorizationHeader?.() || {};
+            } catch {
+              return {};
+            }
+          };
+
+          const authHeaders = getAuthorizationHeaderSafe();
+
+          // 1) Fetch + parse the manifest
+          const arrayBuffer = await MadoParser.fetchManifest(manifestUrl, authHeaders);
+          const displaySets = MadoParser.parse(arrayBuffer);
+
+          if (!MadoParser.validate(displaySets)) {
+            throw new Error('MADO manifest validation failed');
+          }
+
+          // 2) Enrich by fetching WADO-RS /metadata for the referenced series
+          await retrieveMadoMetadata({
+            displaySets,
+            wadoRoot: dicomWebConfig.wadoRoot,
+            dicomWebClient: wadoDicomWebClient,
+            getAuthorizationHeader: getAuthorizationHeaderSafe,
+            getImageIdsForInstance: implementation.getImageIdsForInstance.bind(implementation),
+            dicomWebConfig,
+            madeInClient,
+          });
+
+          // Return a lightweight series summary list (mirrors retrieve.series.metadata)
+          return displaySets.map(ds => ({
+            StudyInstanceUID: ds.studyInstanceUID,
+            SeriesInstanceUID: ds.seriesInstanceUID,
+            SeriesDescription: ds.seriesDescription,
+          }));
         },
       },
     },
@@ -741,4 +819,4 @@ function retrieveBulkData(value, options = {}) {
   });
 }
 
-export { createDicomWebApi };
+export { createDicomWebApi, MadoParser, retrieveMadoMetadata, getMadoManifestUrl };

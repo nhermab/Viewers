@@ -84,6 +84,23 @@ export async function defaultRouteInit(
 
   unsubscriptions.push(instanceAddedUnsubscribe);
 
+  // In no-QIDO (MADO) workflows, instances are typically inserted into the
+  // DicomMetadataStore before this route init runs, so the INSTANCES_ADDED
+  // event may have already fired. Ensure display sets exist by creating them
+  // from any already-loaded series now.
+  try {
+    studyInstanceUIDs?.forEach(StudyInstanceUID => {
+      const study = DicomMetadataStore.getStudy(StudyInstanceUID);
+      study?.series?.forEach(series => {
+        if (series?.instances?.length) {
+          displaySetService.makeDisplaySets(series.instances, { madeInClient: false });
+        }
+      });
+    });
+  } catch (e) {
+    console.warn('defaultRouteInit: unable to pre-create display sets from existing metadata', e);
+  }
+
   log.time(Enums.TimingEnum.STUDY_TO_DISPLAY_SETS);
   log.time(Enums.TimingEnum.STUDY_TO_FIRST_IMAGE);
 

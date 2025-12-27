@@ -215,6 +215,11 @@ function WorkList({
 
   // Query for series information
   useEffect(() => {
+    // In MADO/WADO-RS-only mode we do not allow QIDO queries.
+    if ((dataSource as any)?.getConfig?.()?.disableQido) {
+      return;
+    }
+
     const fetchSeries = async studyInstanceUid => {
       try {
         const series = await dataSource.query.series.search(studyInstanceUid);

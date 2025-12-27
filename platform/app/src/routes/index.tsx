@@ -1,19 +1,30 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Routes, Route, Link, useNavigate } from 'react-router-dom';
 import { ErrorBoundary } from '@ohif/ui-next';
 
 // Route Components
-import DataSourceWrapper from './DataSourceWrapper';
-import WorkList from './WorkList';
 import Local from './Local';
 import Debug from './Debug';
 import NotFound from './NotFound';
+import MadoViewer from './MadoViewer';
 import buildModeRoutes from './buildModeRoutes';
 import PrivateRoute from './PrivateRoute';
 import PropTypes from 'prop-types';
 import { routerBasename } from '../utils/publicUrl';
 import { useAppConfig } from '@state';
 import { history } from '../utils/history';
+
+interface RouteConfig {
+  path: string;
+  children: React.ComponentType<unknown>;
+  private?: boolean;
+  props?: Record<string, unknown>;
+}
+
+interface CustomRoutes {
+  routes?: RouteConfig[];
+  notFoundRoute?: RouteConfig;
+}
 
 const NotFoundServer = ({
   message = 'Unable to query for studies at this time. Check your data source configuration or network connection',
@@ -38,12 +49,17 @@ const NotFoundStudy = () => {
   return (
     <div className="absolute flex h-full w-full items-center justify-center text-white">
       <div>
-        <h4>
-          One or more of the requested studies are not available at this time.
-        </h4>
+        <h4>One or more of the requested studies are not available at this time.</h4>
         {showStudyList && (
           <p className="mt-2">
-            Return to the <Link className="text-primary-light" to="/">study list</Link> to select a different study to view.
+            {'Return to the '}
+            <Link
+              className="text-primary-light"
+              to="/"
+            >
+              study list
+            </Link>
+            {' to select a different study to view.'}
           </p>
         )}
       </div>
@@ -56,7 +72,12 @@ NotFoundStudy.propTypes = {
 };
 
 // TODO: Include "routes" debug route if dev build
-const bakedInRoutes = [
+const bakedInRoutes: RouteConfig[] = [
+  {
+    path: `/mado`,
+    children: MadoViewer,
+    private: true,
+  },
   {
     path: `/notfoundserver`,
     children: NotFoundServer,
@@ -82,6 +103,19 @@ const bakedInRoutes = [
 // NOT FOUND (404)
 const notFoundRoute = { path: '*', children: NotFound };
 
+const DEFAULT_MADO_MANIFEST_URL =
+  'https://ihe.tldr.me/MADO_FROM_SCU/mado_1.3.6.1.4.1.14519.5.2.1.7310.5101.860473186348887719777907797922.dcm';
+
+function HomeRedirect() {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    navigate(`/mado?manifestUrl=${encodeURIComponent(DEFAULT_MADO_MANIFEST_URL)}`);
+  }, [navigate]);
+
+  return null;
+}
+
 const createRoutes = ({
   modes,
   dataSources,
@@ -89,7 +123,6 @@ const createRoutes = ({
   servicesManager,
   commandsManager,
   hotkeysManager,
-  showStudyList,
 }: withAppTypes) => {
   const routes =
     buildModeRoutes({
@@ -110,39 +143,37 @@ const createRoutes = ({
 
   console.log('Registering worklist route', routerBasename, path);
 
-  const WorkListRoute = {
+  const WorkListRoute: RouteConfig = {
     path: '/',
-    children: DataSourceWrapper,
+    children: HomeRedirect,
     private: true,
-    props: { children: WorkList, servicesManager, extensionManager },
   };
 
-  const customRoutes = customizationService.getCustomization('routes.customRoutes');
+  const customRoutes = customizationService.getCustomization('routes.customRoutes') as
+    | CustomRoutes
+    | undefined;
 
   const allRoutes = [
     ...routes,
-    ...(showStudyList ? [WorkListRoute] : []),
+    WorkListRoute,
     ...(customRoutes?.routes || []),
     ...bakedInRoutes,
     customRoutes?.notFoundRoute || notFoundRoute,
   ];
 
-  function RouteWithErrorBoundary({ route, ...rest }) {
+  function RouteWithErrorBoundary({ route }: { route: RouteConfig }) {
     const [appConfig] = useAppConfig();
     const { showErrorDetails } = appConfig;
 
     history.navigate = useNavigate();
 
-    // eslint-disable-next-line react/jsx-props-no-spreading
     return (
       <ErrorBoundary
         context={`Route ${route.path}`}
         showErrorDetails={showErrorDetails}
       >
         <route.children
-          {...rest}
           {...route.props}
-          route={route}
           servicesManager={servicesManager}
           extensionManager={extensionManager}
           hotkeysManager={hotkeysManager}
