@@ -108,6 +108,23 @@ function PanelStudyBrowser({
 
   // ~~ studyDisplayList
   useEffect(() => {
+    const qidoDisabled = (dataSource as any)?.getConfig?.()?.disableQido;
+
+    // In MADO-only workflows (QIDO disabled), build a minimal study list from the
+    // currently loaded StudyInstanceUIDs so the StudyBrowser can render series.
+    if (qidoDisabled) {
+      setStudyDisplayList(
+        StudyInstanceUIDs.map(studyInstanceUid => ({
+          studyInstanceUid,
+          date: '',
+          description: '',
+          modalities: '',
+          numInstances: 0,
+        }))
+      );
+      return;
+    }
+
     // Fetch all studies for the patient in each primary study
     async function fetchStudiesForPatient(StudyInstanceUID) {
       // Skip fetching if we've already fetched this study
