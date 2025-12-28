@@ -98,7 +98,7 @@ window.config = {
   //   // Example 2, to restricts to either hosptial.com or othersite.com.
   //   // regex: /(https:\/\/hospital.com(\/[0-9A-Za-z.]+)*)|(https:\/\/othersite.com(\/[0-9A-Za-z.]+)*)/
   //   regex: /.*/,
-  // },
+  // },  /* studies/1.3.6.1.4.1.14519.5.2.1.7310.5101.860473186348887719777907797922/series/1.3.6.1.4.1.14519.5.2.1.7310.5101.954971126538677029303237284568/metadata */
   dataSources: [
     {
       namespace: '@ohif/extension-default.dataSourcesModule.dicomweb',
@@ -109,8 +109,8 @@ window.config = {
         wadoUriRoot: 'http://172.20.240.184:9999/dicom-web/',
         // NOTE: dicomweb-client requires a base URL for QIDO client creation.
         // We set it to the same base as WADO-RS, but will block QIDO calls in the datasource.
-        qidoRoot: 'http://172.20.240.184:9999/----------------------gfhdgfhdfgdicom-web/',
-        wadoRoot: 'http://172.20.240.184:9999/dicom-web/',
+        qidoRoot: 'https://ihebelgium.ehealthhub.be/orthanc/dicom-web/wado-rs/NOT_USED/',
+        wadoRoot: 'https://ihebelgium.ehealthhub.be/orthanc/dicom-web/wado-rs/',
         disableQido: true,
         qidoSupportsIncludeField: true,
         supportsReject: false,
