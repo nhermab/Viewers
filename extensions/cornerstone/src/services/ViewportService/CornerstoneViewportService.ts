@@ -412,6 +412,10 @@ class CornerstoneViewportService extends PubSubService implements IViewportServi
     // using its viewport (same viewportId as the new viewportInfo)
     const viewportInfo = this.viewportsById.get(viewportId);
 
+    if (!viewportInfo) {
+      throw new Error('element is not enabled for the given viewportId');
+    }
+
     // We should store the presentation for the current viewport since we can't only
     // rely to store it WHEN the viewport is disabled since we might keep around the
     // same viewport/element and just change the viewportData for it (drag and drop etc.)
@@ -424,9 +428,6 @@ class CornerstoneViewportService extends PubSubService implements IViewportServi
       viewportInfo.getViewportId()
     );
 
-    if (!viewportInfo) {
-      throw new Error('element is not enabled for the given viewportId');
-    }
 
     // override the viewportOptions and displaySetOptions with the public ones
     // since those are the newly set ones, we set them here so that it handles defaults

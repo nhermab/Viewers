@@ -138,8 +138,18 @@ function getDICOMwebMetadata(instanceMap, imageId) {
     console.warn('Metadata not already found for', imageId, 'in', instanceMap);
     return this.super.getDICOMwebMetadata(imageId);
   }
+
+  // Filter out internal OHIF fields before denaturalizing
+  const filteredInstance = {};
+  Object.keys(instance).forEach(key => {
+    // Skip fields starting with underscore (internal fields) and non-DICOM fields
+    if (!key.startsWith('_') && key !== 'wadoRoot' && key !== 'wadoUri' && key !== 'imageId') {
+      filteredInstance[key] = instance[key];
+    }
+  });
+
   return transferDenaturalizedDataset(
-    denaturalizeDataset(fixMultiValueKeys(instanceMap.get(imageId)))
+    denaturalizeDataset(fixMultiValueKeys(filteredInstance))
   );
 }
 

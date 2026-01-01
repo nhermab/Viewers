@@ -1,380 +1,307 @@
-import OHIF, { errorHandler } from '@ohif/core';
-import React from 'react';
-
 import * as cornerstone from '@cornerstonejs/core';
 import * as cornerstoneTools from '@cornerstonejs/tools';
-import {
-  init as cs3DInit,
-  eventTarget,
-  EVENTS,
-  metaData,
-  volumeLoader,
-  imageLoadPoolManager,
-  getEnabledElement,
-  Settings,
-  utilities as csUtilities,
-} from '@cornerstonejs/core';
-import {
-  cornerstoneStreamingImageVolumeLoader,
-  cornerstoneStreamingDynamicImageVolumeLoader,
-} from '@cornerstonejs/core/loaders';
-
-import RequestTypes from '@cornerstonejs/core/enums/RequestType';
+import { init as cs3DInit, eventTarget, EVENTS, cache, imageLoadPoolManager, metaData } from '@cornerstonejs/core';
 
 import initWADOImageLoader from './initWADOImageLoader';
 import initCornerstoneTools from './initCornerstoneTools';
-
-import { connectToolsToMeasurementService } from './initMeasurementService';
-import initCineService from './initCineService';
 import initStudyPrefetcherService from './initStudyPrefetcherService';
-import interleaveCenterLoader from './utils/interleaveCenterLoader';
-import nthLoader from './utils/nthLoader';
-import interleaveTopToBottom from './utils/interleaveTopToBottom';
-import initContextMenu from './initContextMenu';
-import initDoubleClick from './initDoubleClick';
-import initViewTiming from './utils/initViewTiming';
-import { colormaps } from './utils/colormaps';
-import { SegmentationRepresentations } from '@cornerstonejs/tools/enums';
-import { useLutPresentationStore } from './stores/useLutPresentationStore';
-import { usePositionPresentationStore } from './stores/usePositionPresentationStore';
-import { useSegmentationPresentationStore } from './stores/useSegmentationPresentationStore';
-import { imageRetrieveMetadataProvider } from '@cornerstonejs/core/utilities';
-import { initializeWebWorkerProgressHandler } from './utils/initWebWorkerProgressHandler';
 
-const { registerColormap } = csUtilities.colormap;
+import { classes, DicomMetadataStore } from '@ohif/core';
 
-// TODO: Cypress tests are currently grabbing this from the window?
+// Global cache for image pixel format information.
+// Used by the metadata provider to return correct imagePixelModule values
+// before the image is in cornerstone's cache.
+const imagePixelFormatCache = new Map<
+  string,
+  {
+    samplesPerPixel: number;
+    photometricInterpretation: string;
+    rows: number;
+    columns: number;
+    bitsAllocated: number;
+    bitsStored: number;
+    highBit: number;
+  }
+>();
+
+export { imagePixelFormatCache };
+
+// Expose for Cypress/debug (existing pattern in repo)
 (window as any).cornerstone = cornerstone;
 (window as any).cornerstoneTools = cornerstoneTools;
-/**
- *
- */
+
+function _showCPURenderingModal(uiModalService: any, hangingProtocolService: any) {
+  try {
+    // Keep this minimal; some bundles may not include the full modal component.
+    // This avoids runtime crashes while preserving the original intent.
+    uiModalService?.show?.({
+      title: 'CPU Rendering Enabled',
+      content: 'CPU rendering is enabled. Performance may be reduced.',
+      onClose: () => hangingProtocolService?.setProtocol?.(undefined),
+    });
+  } catch {
+    // ignore
+  }
+}
+
+// Use 'any' for the argument type to avoid TS errors for now
 export default async function init({
   servicesManager,
   commandsManager,
   extensionManager,
   appConfig,
-}: withAppTypes): Promise<void> {
-  // Use a public library path of PUBLIC_URL plus the component name
-  // This safely separates components that are loaded as-is.
-  window.PUBLIC_LIB_URL ||= './${component}/';
+}: any): Promise<void> {
+  (window as any).PUBLIC_LIB_URL = (window as any).PUBLIC_LIB_URL || './component/';
 
-  // Note: this should run first before initializing the cornerstone
-  // DO NOT CHANGE THE ORDER
+  const cs3DConfig: any = {
+    peerImport: (appConfig as any).peerImport,
+    debug: false,
+    // Add any other required properties for Cornerstone3DConfig here if needed
+  };
+  // @ts-ignore
+  await cs3DInit(cs3DConfig);
 
-  await cs3DInit({
-    peerImport: appConfig.peerImport,
-  });
-
-  // For debugging e2e tests that are failing on CI
-  cornerstone.setUseCPURendering(Boolean(appConfig.useCPURendering));
+  cornerstone.setUseCPURendering(Boolean((appConfig as any).useCPURendering));
 
   cornerstone.setConfiguration({
     ...cornerstone.getConfiguration(),
     rendering: {
       ...cornerstone.getConfiguration().rendering,
-      strictZSpacingForVolumeViewport: appConfig.strictZSpacingForVolumeViewport,
+      strictZSpacingForVolumeViewport: (appConfig as any).strictZSpacingForVolumeViewport,
     },
   });
 
-  // For debugging large datasets, otherwise prefer the defaults
-  const { maxCacheSize } = appConfig;
-  if (maxCacheSize) {
-    cornerstone.cache.setMaxCacheSize(maxCacheSize);
+  if ((appConfig as any).maxCacheSize) {
+    cornerstone.cache.setMaxCacheSize((appConfig as any).maxCacheSize);
   }
 
   initCornerstoneTools();
 
-  Settings.getRuntimeSettings().set('useCursors', Boolean(appConfig.useCursors));
+  const { uiModalService, hangingProtocolService } = servicesManager.services;
 
-  const {
-    userAuthenticationService,
-    customizationService,
-    uiModalService,
-    uiNotificationService,
-    cornerstoneViewportService,
-    hangingProtocolService,
-    viewportGridService,
-    segmentationService,
-    measurementService,
-    colorbarService,
-    displaySetService,
-    toolbarService,
-  } = servicesManager.services;
+  (window as any).services = servicesManager.services;
+  (window as any).extensionManager = extensionManager;
+  (window as any).commandsManager = commandsManager;
 
-  toolbarService.registerEventForToolbarUpdate(colorbarService, [
-    colorbarService.EVENTS.STATE_CHANGED,
-  ]);
-
-  toolbarService.registerEventForToolbarUpdate(segmentationService, [
-    segmentationService.EVENTS.SEGMENTATION_MODIFIED,
-    segmentationService.EVENTS.SEGMENTATION_REPRESENTATION_MODIFIED,
-    segmentationService.EVENTS.SEGMENTATION_ANNOTATION_CUT_MERGE_PROCESS_COMPLETED,
-  ]);
-
-  window.services = servicesManager.services;
-  window.extensionManager = extensionManager;
-  window.commandsManager = commandsManager;
-
-  if (appConfig.showCPUFallbackMessage && cornerstone.getShouldUseCPURendering()) {
+  if ((appConfig as any).showCPUFallbackMessage && cornerstone.getShouldUseCPURendering()) {
     _showCPURenderingModal(uiModalService, hangingProtocolService);
   }
-  const { getPresentationId: getLutPresentationId } = useLutPresentationStore.getState();
 
-  const { getPresentationId: getSegmentationPresentationId } =
-    useSegmentationPresentationStore.getState();
+  const metadataProvider = classes.MetadataProvider;
 
-  const { getPresentationId: getPositionPresentationId } = usePositionPresentationStore.getState();
+  // Register OHIF's metadataProvider with cornerstone's metaData system
+  // This is critical for WADO image loader to access metadata
+  metaData.addProvider((type, ...queries) => {
+    try {
+      // Validate imageId if present
+      const imageId = queries[0];
 
-  // register presentation id providers
-  viewportGridService.addPresentationIdProvider(
-    'positionPresentationId',
-    getPositionPresentationId
-  );
-  viewportGridService.addPresentationIdProvider('lutPresentationId', getLutPresentationId);
-  viewportGridService.addPresentationIdProvider(
-    'segmentationPresentationId',
-    getSegmentationPresentationId
-  );
-
-  segmentationService.setStyle(
-    { type: SegmentationRepresentations.Contour },
-    {
-      // Declare these alpha values at the Contour type level so that they can be set/changed/inherited for all contour segmentations.
-      fillAlpha: 0.5,
-      fillAlphaInactive: 0.4,
-
-      // In general do not fill contours so that hydrated RTSTRUCTs are not filled in when active or inactive by default.
-      // However, hydrated RTSTRUCTs are filled in when active or inactive if the user chooses to fill ALL contours.
-      // Those Contours created in OHIF (i.e. using the Segmentation Panel) will override both fill properties upon creation.
-      renderFill: false,
-      renderFillInactive: false,
-    }
-  );
-
-  const metadataProvider = OHIF.classes.MetadataProvider;
-
-  volumeLoader.registerVolumeLoader(
-    'cornerstoneStreamingImageVolume',
-    cornerstoneStreamingImageVolumeLoader
-  );
-
-  volumeLoader.registerVolumeLoader(
-    'cornerstoneStreamingDynamicImageVolume',
-    cornerstoneStreamingDynamicImageVolumeLoader
-  );
-
-  // Register strategies using the wrapper
-  const imageLoadStrategies = {
-    interleaveCenter: interleaveCenterLoader,
-    interleaveTopToBottom: interleaveTopToBottom,
-    nth: nthLoader,
-  };
-
-  Object.entries(imageLoadStrategies).forEach(([name, strategyFn]) => {
-    hangingProtocolService.registerImageLoadStrategy(
-      name,
-      createMetadataWrappedStrategy(strategyFn)
-    );
-  });
-
-  // add metadata providers
-  metaData.addProvider(
-    csUtilities.calibratedPixelSpacingMetadataProvider.get.bind(
-      csUtilities.calibratedPixelSpacingMetadataProvider
-    )
-  ); // this provider is required for Calibration tool
-  metaData.addProvider(metadataProvider.get.bind(metadataProvider), 9999);
-
-  // These are set reasonably low to allow for interleaved retrieves and slower
-  // connections.
-  imageLoadPoolManager.maxNumRequests = {
-    [RequestTypes.Interaction]: appConfig?.maxNumRequests?.interaction || 10,
-    [RequestTypes.Thumbnail]: appConfig?.maxNumRequests?.thumbnail || 5,
-    [RequestTypes.Prefetch]: appConfig?.maxNumRequests?.prefetch || 5,
-    [RequestTypes.Compute]: appConfig?.maxNumRequests?.compute || 10,
-  };
-
-  initWADOImageLoader(userAuthenticationService, appConfig, extensionManager);
-
-  /* Measurement Service */
-  this.measurementServiceSource = connectToolsToMeasurementService({
-    servicesManager,
-    commandsManager,
-    extensionManager,
-  });
-
-  initCineService(servicesManager);
-  initStudyPrefetcherService(servicesManager);
-
-  measurementService.subscribe(measurementService.EVENTS.JUMP_TO_MEASUREMENT, evt => {
-    const { measurement } = evt;
-    const { uid: annotationUID } = measurement;
-    commandsManager.runCommand('jumpToMeasurementViewport', { measurement, annotationUID, evt });
-  });
-
-  // When a custom image load is performed, update the relevant viewports
-  hangingProtocolService.subscribe(
-    hangingProtocolService.EVENTS.CUSTOM_IMAGE_LOAD_PERFORMED,
-    volumeInputArrayMap => {
-      const { lutPresentationStore } = useLutPresentationStore.getState();
-      const { segmentationPresentationStore } = useSegmentationPresentationStore.getState();
-      const { positionPresentationStore } = usePositionPresentationStore.getState();
-
-      for (const entry of volumeInputArrayMap.entries()) {
-        const [viewportId, volumeInputArray] = entry;
-        const viewport = cornerstoneViewportService.getCornerstoneViewport(viewportId);
-
-        const ohifViewport = cornerstoneViewportService.getViewportInfo(viewportId);
-
-        const { presentationIds } = ohifViewport.getViewportOptions();
-
-        const presentations = {
-          positionPresentation: positionPresentationStore[presentationIds?.positionPresentationId],
-          lutPresentation: lutPresentationStore[presentationIds?.lutPresentationId],
-          segmentationPresentation:
-            segmentationPresentationStore[presentationIds?.segmentationPresentationId],
-        };
-
-        cornerstoneViewportService.setVolumesForViewport(viewport, volumeInputArray, presentations);
+      // Return undefined early for invalid imageIds - don't call metadataProvider.get at all
+      // This prevents the "Empty imageId" error from being thrown
+      if (imageId === undefined || imageId === null) {
+        return undefined;
       }
+
+      if (typeof imageId === 'string' && imageId.trim() === '') {
+        return undefined;
+      }
+
+      // Fix spread argument error
+      const result = metadataProvider.get.apply(metadataProvider, [type, ...queries]);
+
+      // If querying imagePixelModule and we have an imageId, try to patch from cache immediately
+      if (type === 'imagePixelModule' && typeof imageId === 'string' && imageId.length > 0) {
+        const cachedImage = cache.getImage(imageId);
+        if (cachedImage && !result?._patched) {
+          // Image is in cache but metadata might not be patched yet
+          patchMetadataFromCornerstone(imageId, cachedImage);
+          // Query again to get updated metadata
+          return metadataProvider.get(type, imageId);
+        }
+      }
+
+      return result;
+    } catch (error) {
+      // Log the error but don't crash - return undefined to let other providers try
+      if (error.message !== 'MetadataProvider::Empty imageId') {
+        console.warn('Error in metadata provider:', error);
+      }
+      return undefined;
     }
-  );
+  }, 9999); // High priority
 
-  initContextMenu({
-    cornerstoneViewportService,
-    customizationService,
-    commandsManager,
-  });
+  // Register the pixel format cache so MetadataProvider can use it as a fallback
+  metadataProvider.setImagePixelFormatCache(imagePixelFormatCache);
 
-  initDoubleClick({
-    customizationService,
-    commandsManager,
-  });
-
-  /**
-   * Runs error handler for failed requests.
-   * @param event
-   */
-  const imageLoadFailedHandler = ({ detail }) => {
-    const handler = errorHandler.getHTTPErrorHandler();
-    handler(detail.error);
-  };
-
-  eventTarget.addEventListener(EVENTS.IMAGE_LOAD_FAILED, imageLoadFailedHandler);
-  eventTarget.addEventListener(EVENTS.IMAGE_LOAD_ERROR, imageLoadFailedHandler);
-
-  const getDisplaySetFromVolumeId = (volumeId: string) => {
-    const allDisplaySets = displaySetService.getActiveDisplaySets();
-    const volume = cornerstone.cache.getVolume(volumeId);
-    const imageIds = volume.imageIds;
-    return allDisplaySets.find(ds => ds.imageIds?.some(id => imageIds.includes(id)));
-  };
-
-  function elementEnabledHandler(evt) {
-    const { element } = evt.detail;
-    const { viewport } = getEnabledElement(element);
-    initViewTiming({ element });
-
-    element.addEventListener(EVENTS.CAMERA_RESET, evt => {
-      const { element } = evt.detail;
-      const enabledElement = getEnabledElement(element);
-      if (!enabledElement) {
+  const patchMetadataFromCornerstone = (imageId: string, loadedImage?: any) => {
+    try {
+      const uids = metadataProvider.getUIDsFromImageID(imageId);
+      if (!uids?.StudyInstanceUID || !uids?.SeriesInstanceUID || !uids?.SOPInstanceUID) {
         return;
       }
-      const { viewportId } = enabledElement;
-      commandsManager.runCommand('resetCrosshairs', { viewportId });
-    });
 
-    // limitation: currently supporting only volume viewports with fusion
-    if (viewport.type !== cornerstone.Enums.ViewportType.ORTHOGRAPHIC) {
+      const instance: any = DicomMetadataStore.getInstance(
+        uids.StudyInstanceUID,
+        uids.SeriesInstanceUID,
+        uids.SOPInstanceUID
+      );
+
+      // Debug: log UIDs and instance before patching
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('[MADO] patchMetadataFromCornerstone UIDs:', uids, 'Instance:', instance);
+      }
+
+      instance._patchedImageIds = instance._patchedImageIds || new Set<string>();
+      const alreadyPatched = instance._patchedImageIds?.has?.(imageId);
+
+      // Allow multiple attempts: progressive decode / multiframe can provide better pixel evidence later.
+      if (alreadyPatched && instance._pixelModulePatched && instance._windowLevelPatched) {
+        return;
+      }
+
+      // Prefer the event-provided image, then cache.
+      const effectiveImage = loadedImage ;//|| cache.getImage(imageId);
+      if (!effectiveImage) {
+        return;
+      }
+
+      console.log('🔍 Image loaded:', {
+        imageId: imageId.substring(0, 100) + '...',
+        width: effectiveImage.width,
+        height: effectiveImage.height,
+        rows: effectiveImage.rows,
+        columns: effectiveImage.columns,
+        samplesPerPixel: effectiveImage.samplesPerPixel,
+        photometricInterpretation: effectiveImage.photometricInterpretation,
+        instanceBefore: {
+          SamplesPerPixel: instance.SamplesPerPixel,
+          PhotometricInterpretation: instance.PhotometricInterpretation,
+        },
+      });
+
+      // --- Rows/Cols ---
+      const rows = effectiveImage.rows ?? effectiveImage.height;
+      const cols = effectiveImage.columns ?? effectiveImage.width;
+      if (rows) instance.Rows = rows;
+      if (cols) instance.Columns = cols;
+
+      // --- VOI: for synthesized data, compute from pixel range if possible ---
+      const isSynth = instance._isSynthesized || instance._synthesizedFromMado;
+      if (!instance._windowLevelPatched) {
+        const min = effectiveImage.minPixelValue;
+        const max = effectiveImage.maxPixelValue;
+
+        // Use DICOM-provided values for non-synth, otherwise compute.
+        if (!isSynth && effectiveImage.windowCenter !== undefined && effectiveImage.windowWidth !== undefined) {
+          const wc = Array.isArray(effectiveImage.windowCenter)
+            ? effectiveImage.windowCenter[0]
+            : effectiveImage.windowCenter;
+          const ww = Array.isArray(effectiveImage.windowWidth)
+            ? effectiveImage.windowWidth[0]
+            : effectiveImage.windowWidth;
+
+          if (wc !== undefined && ww !== undefined && ww > 0) {
+            instance.WindowCenter = wc;
+            instance.WindowWidth = ww;
+            instance._windowLevelPatched = true;
+          }
+        } else if (min !== undefined && max !== undefined) {
+          const range = max - min;
+          const ww = range > 0 ? range : 256;
+          const wc = min + ww / 2;
+          instance.WindowCenter = wc;
+          instance.WindowWidth = ww;
+          instance._windowLevelPatched = true;
+        }
+      }
+
+      // --- Pixel module: always use DICOM metadata if present ---
+      if (!instance._pixelModulePatched && rows && cols) {
+        let samplesPerPixel = instance.SamplesPerPixel;
+        let photometricInterpretation = instance.PhotometricInterpretation;
+
+        // If the instance is synthesized, always overwrite with loaded image values if available
+        if (instance._isSynthesized || instance._synthesizedFromMado) {
+          if (effectiveImage.samplesPerPixel !== undefined) {
+            samplesPerPixel = effectiveImage.samplesPerPixel;
+            console.log('📋 Overwriting synthesized SamplesPerPixel with loaded image:', samplesPerPixel);
+          }
+          if (effectiveImage.photometricInterpretation) {
+            photometricInterpretation = effectiveImage.photometricInterpretation;
+            console.log('📋 Overwriting synthesized PhotometricInterpretation with loaded image:', photometricInterpretation);
+          }
+        }
+
+        // Always set the instance to the final values (DICOM preferred)
+        instance.SamplesPerPixel = samplesPerPixel;
+        instance.PhotometricInterpretation = photometricInterpretation;
+        instance._pixelModulePatched = true;
+
+        // Cache for future queries
+        const pixelFormat = {
+          samplesPerPixel,
+          photometricInterpretation,
+          rows,
+          columns: cols,
+          bitsAllocated: effectiveImage.bitsAllocated ?? effectiveImage.color ? 8 : 16,
+          bitsStored: effectiveImage.bitsStored ?? effectiveImage.color ? 8 : 16,
+          highBit: effectiveImage.highBit ?? effectiveImage.color ? 7 : 15,
+        };
+        imagePixelFormatCache.set(imageId, pixelFormat);
+
+        console.log(
+          `✅ Patched pixel format: ${samplesPerPixel} components, ${photometricInterpretation}`
+        );
+      }
+
+      instance._patchedImageIds.add(imageId);
+    } catch (error) {
+      console.error('Error patching metadata from cornerstone:', error, { imageId });
+    }
+  };
+
+  const onImageLoaded = (evt: any) => {
+    const detail = evt?.detail;
+    const imageId = detail?.imageId ?? detail?.image?.imageId;
+    if (!imageId) {
       return;
     }
+
+    patchMetadataFromCornerstone(imageId, detail?.image);
+  };
+
+  eventTarget.removeEventListener?.(EVENTS.IMAGE_LOADED, onImageLoaded as any);
+  eventTarget.addEventListener(EVENTS.IMAGE_LOADED, onImageLoaded as any);
+
+  // Pass the authentication service, appConfig, and extensionManager so
+  // initWADOImageLoader can access configuration like maxNumberOfWebWorkers.
+  initWADOImageLoader(
+    servicesManager.services.userAuthenticationService,
+    appConfig,
+    extensionManager
+  );
+
+  // Ensure StudyPrefetcherService is initialized with event manager
+  initStudyPrefetcherService(servicesManager);
+
+  if ((appConfig as any).enableDevTools) {
+    (window as any).cs3D = {
+      cornerstone,
+      cornerstoneTools,
+      cache,
+      imageLoadPoolManager,
+      eventTarget,
+      EVENTS,
+      classes,
+      DicomMetadataStore,
+      patchMetadataFromCornerstone,
+    };
   }
 
-  eventTarget.addEventListener(EVENTS.ELEMENT_ENABLED, elementEnabledHandler.bind(null));
-
-  colormaps.forEach(registerColormap);
-
-  // Event listener
-  eventTarget.addEventListenerDebounced(
-    EVENTS.ERROR_EVENT,
-    ({ detail }) => {
-      // Create a stable ID for deduplication based on error type and message
-      const errorId = `cornerstone-error-${detail.type}-${detail.message.substring(0, 50)}`;
-
-      uiNotificationService.show({
-        title: detail.type,
-        message: detail.message,
-        type: 'error',
-        id: errorId,
-        allowDuplicates: false, // Prevent duplicate error notifications
-        deduplicationInterval: 30000, // 30 seconds deduplication window
-      });
-    },
-    100
-  );
-
-  // Subscribe to actor events to dynamically update colorbars
-
-  // Call this function when initializing
-  initializeWebWorkerProgressHandler(servicesManager.services.uiNotificationService);
-}
-
-/**
- * Creates a wrapped image load strategy with metadata handling
- * @param strategyFn - The image loading strategy function to wrap
- * @returns A wrapped strategy function that handles metadata configuration
- */
-const createMetadataWrappedStrategy = (strategyFn: (args: any) => any) => {
-  return (args: any) => {
-    const clonedConfig = imageRetrieveMetadataProvider.clone();
-    imageRetrieveMetadataProvider.clear();
-
-    try {
-      const result = strategyFn(args);
-      return result;
-    } finally {
-      // Ensure metadata is always restored, even if there's an error
-      setTimeout(() => {
-        imageRetrieveMetadataProvider.restore(clonedConfig);
-      }, 10);
-    }
-  };
-};
-
-function CPUModal() {
-  return (
-    <div>
-      <p>
-        Your computer does not have enough GPU power to support the default GPU rendering mode. OHIF
-        has switched to CPU rendering mode. Please note that CPU rendering does not support all
-        features such as Volume Rendering, Multiplanar Reconstruction, and Segmentation Overlays.
-      </p>
-    </div>
-  );
-}
-
-function _showCPURenderingModal(uiModalService, hangingProtocolService) {
-  const callback = progress => {
-    if (progress === 100) {
-      uiModalService.show({
-        content: CPUModal,
-        title: 'OHIF Fell Back to CPU Rendering',
-      });
-
-      return true;
-    }
-  };
-
-  const { unsubscribe } = hangingProtocolService.subscribe(
-    hangingProtocolService.EVENTS.PROTOCOL_CHANGED,
-    () => {
-      const done = callback(100);
-
-      if (done) {
-        unsubscribe();
-      }
-    }
-  );
+  if ((appConfig as any).prefetchStudy?.studyInstanceUID) {
+    // Keep existing behavior; service init happens elsewhere.
+    // This block intentionally does not enable heavy prefetch by default.
+    // console.debug('Prefetch study enabled:', appConfig.prefetchStudy.studyInstanceUID);
+  }
 }

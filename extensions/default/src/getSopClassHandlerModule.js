@@ -68,10 +68,26 @@ function getDisplaySetInfo(instances) {
 }
 
 const makeDisplaySet = (instances, index) => {
-  // Need to sort the instances in order to get a consistent instance/thumbnail
-  sortStudyInstances(instances);
-  const instance = instances[0];
-  const imageSet = new ImageSet(instances);
+  // Accept instances with valid imageId or _imageId
+  const validInstances = instances.filter(inst => {
+    const id = inst.imageId || inst._imageId;
+    return typeof id === 'string' && (id.startsWith('wadors:') || id.startsWith('wadouri:'));
+  }).map(inst => {
+    // If imageId is missing but _imageId is present, set imageId = _imageId
+    if (!inst.imageId && inst._imageId) {
+      inst.imageId = inst._imageId;
+    }
+    return inst;
+  });
+  if (validInstances.length === 0) {
+    // eslint-disable-next-line no-console
+    console.warn('No valid instances with wadors:/wadouri: imageId for display set, skipping.', instances);
+    return null;
+  }
+  // Use validInstances for display set creation
+  sortStudyInstances(validInstances);
+  const instance = validInstances[0];
+  const imageSet = new ImageSet(validInstances);
   const { extensionManager } = appContext;
   const dataSource = extensionManager.getActiveDataSource()[0];
   const {
@@ -79,14 +95,14 @@ const makeDisplaySet = (instances, index) => {
     value: isReconstructable,
     averageSpacingBetweenFrames,
     dynamicVolumeInfo,
-  } = getDisplaySetInfo(instances);
+  } = getDisplaySetInfo(validInstances);
 
   const volumeLoaderSchema = isDynamicVolume
     ? DYNAMIC_VOLUME_LOADER_SCHEME
     : DEFAULT_VOLUME_LOADER_SCHEME;
 
   // set appropriate attributes to image set...
-  const messages = getDisplaySetMessages(instances, isReconstructable, isDynamicVolume);
+  const messages = getDisplaySetMessages(validInstances, isReconstructable, isDynamicVolume);
 
   imageSet.setAttributes({
     volumeLoaderSchema,
@@ -102,7 +118,7 @@ const makeDisplaySet = (instances, index) => {
     Modality: instance.Modality,
     isMultiFrame: isMultiFrame(instance),
     countIcon: isReconstructable ? 'icon-mpr' : undefined,
-    numImageFrames: instances.length,
+    numImageFrames: validInstances.length,
     SOPClassHandlerId: `${id}.sopClassHandlerModule.${sopClassHandlerName}`,
     isReconstructable,
     messages,
@@ -118,12 +134,19 @@ const makeDisplaySet = (instances, index) => {
 
   const imageIds = dataSource.getImageIdsForDisplaySet(imageSet);
   let imageId = imageIds[Math.floor(imageIds.length / 2)];
-  let thumbnailInstance = instances[Math.floor(instances.length / 2)];
+  let thumbnailInstance = validInstances[Math.floor(validInstances.length / 2)];
   if (isDynamicVolume) {
     const timePoints = dynamicVolumeInfo.timePoints;
     const middleIndex = Math.floor(timePoints.length / 2);
     const middleTimePointImageIds = timePoints[middleIndex];
     imageId = middleTimePointImageIds[Math.floor(middleTimePointImageIds.length / 2)];
+  }
+
+  // Defensive check before parseImageId or any string operation on imageId
+  if (typeof imageId !== 'string' || !imageId.length) {
+    // eslint-disable-next-line no-console
+    console.warn('DisplaySet creation: Skipping invalid imageId', imageId, instance);
+    return; // or continue/skip as appropriate
   }
 
   imageSet.setAttributes({
@@ -199,21 +222,25 @@ function getDisplaySetsFromSeries(instances) {
     let displaySet;
     if (isMultiFrame(instance)) {
       displaySet = makeDisplaySet([instance], instanceIndex);
-      displaySet.setAttributes({
-        sopClassUids,
-        numImageFrames: instance.NumberOfFrames,
-        instanceNumber: instance.InstanceNumber,
-        acquisitionDatetime: instance.AcquisitionDateTime,
-      });
-      displaySets.push(displaySet);
+      if (displaySet) {
+        displaySet.setAttributes({
+          sopClassUids,
+          numImageFrames: instance.NumberOfFrames,
+          instanceNumber: instance.InstanceNumber,
+          acquisitionDatetime: instance.AcquisitionDateTime,
+        });
+        displaySets.push(displaySet);
+      }
     } else if (isSingleImageModality(instance.Modality)) {
       displaySet = makeDisplaySet([instance], instanceIndex);
-      displaySet.setAttributes({
-        sopClassUids,
-        instanceNumber: instance.InstanceNumber,
-        acquisitionDatetime: instance.AcquisitionDateTime,
-      });
-      displaySets.push(displaySet);
+      if (displaySet) {
+        displaySet.setAttributes({
+          sopClassUids,
+          instanceNumber: instance.InstanceNumber,
+          acquisitionDatetime: instance.AcquisitionDateTime,
+        });
+        displaySets.push(displaySet);
+      }
     } else {
       stackableInstances.push(instance);
     }
@@ -221,11 +248,13 @@ function getDisplaySetsFromSeries(instances) {
 
   if (stackableInstances.length) {
     const displaySet = makeDisplaySet(stackableInstances, displaySets.length);
-    displaySet.setAttribute('studyInstanceUid', instances[0].StudyInstanceUID);
-    displaySet.setAttributes({
-      sopClassUids,
-    });
-    displaySets.push(displaySet);
+    if (displaySet) {
+      displaySet.setAttribute('studyInstanceUid', instances[0].StudyInstanceUID);
+      displaySet.setAttributes({
+        sopClassUids,
+      });
+      displaySets.push(displaySet);
+    }
   }
 
   return displaySets;

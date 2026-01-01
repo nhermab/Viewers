@@ -17,15 +17,17 @@ export type CinePlayerProps = {
   onFrameRateChange: (value: number) => void;
   onPlayPauseChange: (value: boolean) => void;
   onClose: () => void;
-  updateDynamicInfo?: (info: any) => void;
-  dynamicInfo?: {
-    dimensionGroupNumber: number;
-    numDimensionGroups: number;
-    label?: string;
-  };
+  updateDynamicInfo?: (info: Record<string, unknown>) => void;
+  dynamicInfo?: DynamicInfo;
 };
 
-const CinePlayer: React.FC<CinePlayerProps> = ({
+type DynamicInfo = {
+  dimensionGroupNumber?: number;
+  numDimensionGroups?: number;
+  label?: string;
+};
+
+const CinePlayer = ({
   className,
   isPlaying = false,
   minFrameRate = 1,
@@ -37,8 +39,9 @@ const CinePlayer: React.FC<CinePlayerProps> = ({
   onClose = () => {},
   dynamicInfo = {},
   updateDynamicInfo,
-}) => {
-  const isDynamic = !!dynamicInfo?.numDimensionGroups;
+}: CinePlayerProps) => {
+  const typedDynamicInfo = (dynamicInfo ?? {}) as DynamicInfo;
+  const isDynamic = !!typedDynamicInfo.numDimensionGroups;
   const [frameRate, setFrameRate] = useState(defaultFrameRate);
   const [popoverOpen, setPopoverOpen] = useState(false);
   const debouncedSetFrameRate = useCallback(debounce(onFrameRateChange, 100), [onFrameRateChange]);
@@ -59,14 +62,14 @@ const CinePlayer: React.FC<CinePlayerProps> = ({
 
   const handleDimensionGroupNumberChange = useCallback(
     (newGroupNumber: number) => {
-      if (isDynamic && dynamicInfo) {
+      if (isDynamic && typedDynamicInfo) {
         updateDynamicInfo?.({
-          ...dynamicInfo,
+          ...typedDynamicInfo,
           dimensionGroupNumber: newGroupNumber,
         });
       }
     },
-    [isDynamic, dynamicInfo, updateDynamicInfo]
+    [isDynamic, typedDynamicInfo, updateDynamicInfo]
   );
 
   return (
@@ -87,13 +90,13 @@ const CinePlayer: React.FC<CinePlayerProps> = ({
           <Icons.ByName name={getPlayPauseIconName()} />
         </Button>
 
-        {isDynamic && dynamicInfo && (
+        {isDynamic && typedDynamicInfo && (
           <div className="min-w-16 max-w-44 text-foreground flex flex-col">
             <div className="text-xs">
-              <span className="text-foreground w-2">{dynamicInfo.dimensionGroupNumber}</span>{' '}
-              <span className="text-muted-foreground">{`/${dynamicInfo.numDimensionGroups}`}</span>
+              <span className="text-foreground w-2">{typedDynamicInfo.dimensionGroupNumber}</span>{' '}
+              <span className="text-muted-foreground">{`/${typedDynamicInfo.numDimensionGroups}`}</span>
             </div>
-            <div className="text-muted-foreground text-xs">{dynamicInfo.label}</div>
+            <div className="text-muted-foreground text-xs">{typedDynamicInfo.label}</div>
           </div>
         )}
 
@@ -103,10 +106,7 @@ const CinePlayer: React.FC<CinePlayerProps> = ({
             onOpenChange={setPopoverOpen}
           >
             <PopoverTrigger asChild>
-              <Button
-                variant="ghost"
-                className="h-full border-none bg-transparent p-0 hover:bg-transparent"
-              >
+              <div className="h-full border-none bg-transparent p-0">
                 <Numeric.Container
                   mode="stepper"
                   min={minFrameRate}
@@ -129,7 +129,7 @@ const CinePlayer: React.FC<CinePlayerProps> = ({
                     </div>
                   </Numeric.NumberStepper>
                 </Numeric.Container>
-              </Button>
+              </div>
             </PopoverTrigger>
             <PopoverContent
               side="bottom"
@@ -165,13 +165,13 @@ const CinePlayer: React.FC<CinePlayerProps> = ({
         </Button>
       </div>
 
-      {isDynamic && dynamicInfo && (
+      {isDynamic && typedDynamicInfo && (
         <Numeric.Container
           mode="singleRange"
           min={1}
-          max={dynamicInfo.numDimensionGroups}
+          max={typedDynamicInfo.numDimensionGroups}
           step={1}
-          value={dynamicInfo.dimensionGroupNumber}
+          value={typedDynamicInfo.dimensionGroupNumber}
           onChange={val => handleDimensionGroupNumberChange(val as number)}
           className="pointer-events-auto mt-3 w-full"
         >
@@ -196,11 +196,12 @@ CinePlayer.propTypes = {
   onFrameRateChange: PropTypes.func,
   onClose: PropTypes.func,
   isDynamic: PropTypes.bool,
+  // PropTypes typing doesn't map perfectly to our TS optional shape; keep runtime validation best-effort.
   dynamicInfo: PropTypes.shape({
-    dimensionGroupNumber: PropTypes.number,
-    numDimensionGroups: PropTypes.number,
-    label: PropTypes.string,
-  }),
+      dimensionGroupNumber: PropTypes.number,
+      numDimensionGroups: PropTypes.number,
+      label: PropTypes.string,
+  }) as unknown,
 };
 
 export default CinePlayer;

@@ -184,7 +184,7 @@ App.propTypes = {
   config: PropTypes.oneOfType([
     PropTypes.func,
     PropTypes.shape({
-      routerBasename: PropTypes.string.isRequired,
+      routerBasename: PropTypes.string,
       oidc: PropTypes.array,
       whiteLabeling: PropTypes.object,
       extensions: PropTypes.array,

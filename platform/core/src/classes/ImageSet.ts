@@ -25,18 +25,33 @@ class ImageSet {
   instances: Image[];
   instance?: Image;
   StudyInstanceUID?: string;
+  isReconstructable?: boolean;
 
   constructor(images: Image[]) {
     if (!Array.isArray(images)) {
       throw new Error('ImageSet expects an array of images');
     }
 
+    // Sort images by InstanceNumber immediately to ensure correct order
+    // This is critical for MADO workflows and any case where position data is unavailable
+    const sortedImages = [...images].sort((a, b) => {
+      const aNum = parseInt((a as Record<string, unknown>).InstanceNumber as string) || 0;
+      const bNum = parseInt((b as Record<string, unknown>).InstanceNumber as string) || 0;
+      if (aNum !== bNum) {
+        return aNum - bNum;
+      }
+      // Fallback to SOPInstanceUID
+      const aUID = ((a as Record<string, unknown>).SOPInstanceUID as string) || '';
+      const bUID = ((b as Record<string, unknown>).SOPInstanceUID as string) || '';
+      return aUID.localeCompare(bUID);
+    });
+
     // @property "images"
     Object.defineProperty(this, 'images', {
       enumerable: false,
       configurable: false,
       writable: false,
-      value: images,
+      value: sortedImages,
     });
 
     // @property "uid"
@@ -47,8 +62,8 @@ class ImageSet {
       value: guid(), // Unique ID of the instance
     });
 
-    this.instances = images;
-    this.instance = images[0];
+    this.instances = sortedImages;
+    this.instance = sortedImages[0];
     this.StudyInstanceUID = this.instance?.StudyInstanceUID;
   }
 
@@ -95,19 +110,25 @@ class ImageSet {
     const combinedSortFunctions = Object.assign(
       {},
       instancesSortCriteria,
-      customizedSortingCriteria.sortFunctions
+      customizedSortingCriteria?.sortFunctions || {}
     );
-    const userSpecifiedCriteria = customizedSortingCriteria.defaultSortFunctionName;
+    const userSpecifiedCriteria = customizedSortingCriteria?.defaultSortFunctionName;
+
     // Prefer customized sort function when available
-    if (typeof combinedSortFunctions[userSpecifiedCriteria] === 'function') {
+    if (
+      userSpecifiedCriteria &&
+      typeof combinedSortFunctions[userSpecifiedCriteria] === 'function'
+    ) {
       return this.images.sort(combinedSortFunctions[userSpecifiedCriteria]);
     }
-    // If image position patient is not available, sort by InstanceNumber
-    if (!this.isReconstructable || !isValidForPositionSort(this.images)) {
-      return this.images.sort(instancesSortCriteria.sortByInstanceNumber);
+
+    // Check if position-based sorting is possible
+    if (this.isReconstructable && isValidForPositionSort(this.images)) {
+      return sortImagesByPatientPosition(this.images);
     }
-    // Do image position patient sorting as default sort
-    return sortImagesByPatientPosition(this.images);
+
+    // Default: sort by InstanceNumber (critical for MADO workflows)
+    return this.images.sort(instancesSortCriteria.sortByInstanceNumber);
   }
 
   /**

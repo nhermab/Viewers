@@ -4,7 +4,7 @@ window.config = {
   name: 'config/default.js',
   routerBasename: null,
   // whiteLabeling: {},
-  extensions: [],
+  extensions: ['@ohif/extension-dicom-pdf'],
   modes: [],
   customizationService: {},
   showStudyList: false,
@@ -112,6 +112,7 @@ window.config = {
         qidoRoot: 'https://ihebelgium.ehealthhub.be/orthanc/dicom-web/wado-rs/NOT_USED/',
         wadoRoot: 'https://ihebelgium.ehealthhub.be/orthanc/dicom-web/wado-rs/',
         disableQido: true,
+        disableMetadataQueries: true, // Prohibit /metadata queries - use MADO manifest only
         qidoSupportsIncludeField: true,
         supportsReject: false,
         imageRendering: 'wadors',
@@ -128,11 +129,27 @@ window.config = {
     },
   ],
   httpErrorHandler: error => {
-    // This is 429 when rejected from the public idc sandbox too often.
-    console.warn(error.status);
+    // This handler is invoked for both HTTP-ish errors and Cornerstone image-load
+    // failures. Not all errors will have a `status`.
+    if (!error) {
+      console.warn('HTTP/Image load error: <empty>');
+      return;
+    }
 
-    // Could use services manager here to bring up a dialog/modal if needed.
-    console.warn('test, navigate to https://ohif.org/');
+    const status = error.status ?? error.statusCode ?? error.response?.status;
+    const url = error.url ?? error.request?.url ?? error.response?.url;
+    const message = error.message ?? (typeof error === 'string' ? error : undefined);
+
+    if (status !== undefined || url || message) {
+      console.warn('HTTP/Image load error:', { status, url, message });
+    } else {
+      console.warn('HTTP/Image load error:', error);
+    }
+
+    // Extra context from Cornerstone normalization (if present)
+    if (error.imageId || error.uids) {
+      console.warn('Image context:', { imageId: error.imageId, uids: error.uids });
+    }
   },
   // segmentation: {
   //   segmentLabel: {

@@ -16,6 +16,27 @@ export default function isDisplaySetReconstructable(instances, appConfig) {
   }
   const firstInstance = instances[0];
 
+  // Check if this is MADO-synthesized data with placeholder geometry
+  // For MADO data, we don't allow MPR/3D until the real geometry is patched
+  // This prevents VTK.js errors from trying to render volumes with synthesized geometry
+  const hasMadoSynthesizedData = instances.some(
+    instance => instance._madoPlaceholderGeometry || instance._synthesizedFromMado || instance._isSynthesized
+  );
+
+  if (hasMadoSynthesizedData) {
+    // Check if the geometry has been patched (i.e., real geometry is available)
+    const hasRealGeometry = instances.every(instance => !instance._isSynthesized || instance._geometryPatched);
+
+    if (!hasRealGeometry) {
+      console.log(
+        '📋 MADO synthesized data detected - marking as not reconstructable until real geometry is loaded'
+      );
+      return { value: false, _madoPending: true };
+    }
+
+    console.log('📋 MADO data with patched geometry - proceeding with validation');
+  }
+
   const isMultiframe = firstInstance.NumberOfFrames > 1;
 
   if (appConfig) {

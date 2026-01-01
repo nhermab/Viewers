@@ -119,7 +119,16 @@ export const sortByInstanceNumber = (a, b) => {
   if (aInstance !== bInstance) {
     return (parseInt(a.InstanceNumber) || 0) - (parseInt(b.InstanceNumber) || 0);
   }
-  return compare(a.SOPInstanceUID, b.SOPInstanceUID) || compare(a.frameNumber, b.frameNumber);
+
+  // If this is a multiframe instance, ensure frame numbers sort numerically.
+  // frameNumber can be a string coming from the imageId parsing.
+  const aFrame = a.frameNumber !== undefined ? parseInt(a.frameNumber) || 0 : undefined;
+  const bFrame = b.frameNumber !== undefined ? parseInt(b.frameNumber) || 0 : undefined;
+
+  return (
+    compare(a.SOPInstanceUID, b.SOPInstanceUID) ||
+    (aFrame !== undefined || bFrame !== undefined ? (aFrame || 0) - (bFrame || 0) : 0)
+  );
 };
 
 export const instancesSortCriteria = {

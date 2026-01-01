@@ -35,6 +35,20 @@ export default function getDisplaySetMessages(
     return messages;
   }
 
+  // Check if this is MADO-synthesized data
+  // We still run validations since the synthesized geometry should be valid
+  const hasMadoSynthesizedData = instances.some(
+    instance => instance._madoPlaceholderGeometry || instance._synthesizedFromMado
+  );
+
+  if (hasMadoSynthesizedData) {
+    // Log that this is MADO data but continue with validation
+    // The synthesized geometry should pass validation
+    console.log(
+      '📋 MADO synthesized data detected - running geometry validations on synthesized data'
+    );
+  }
+
   const isMultiframe = NumberOfFrames > 1;
   // Can't reconstruct if all instances don't have the ImagePositionPatient.
   if (!isMultiframe && !instances.every(instance => instance.ImagePositionPatient)) {

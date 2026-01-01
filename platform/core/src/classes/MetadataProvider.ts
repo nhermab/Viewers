@@ -15,9 +15,12 @@ class MetadataProvider {
   // For instance, the scaling metadata for PET can be stored here
   // as type "scalingModule"
   private readonly customMetadata: Map<string, any> = new Map();
+  // External cache for pixel format info (e.g., from cornerstone extension)
+  private imagePixelFormatCache: Map<string, any> | null = null;
 
   addImageIdToUIDs(imageId, uids) {
-    if (!imageId) {
+    if (!imageId || typeof imageId !== 'string') {
+      console.error('MetadataProvider::addImageIdToUIDs called with invalid imageId:', imageId);
       throw new Error('MetadataProvider::Empty imageId');
     }
 
@@ -26,6 +29,10 @@ class MetadataProvider {
     // An example would be dicom hosted at some random site.
     const imageURI = imageIdToURI(imageId);
     this.imageURIToUIDs.set(imageURI, uids);
+  }
+
+  setImagePixelFormatCache(cache: Map<string, any>) {
+    this.imagePixelFormatCache = cache;
   }
 
   addCustomMetadata(imageId, type, metadata) {
@@ -38,7 +45,8 @@ class MetadataProvider {
   }
 
   _getInstance(imageId) {
-    if (!imageId) {
+    if (!imageId || typeof imageId !== 'string') {
+      console.error('MetadataProvider::_getInstance called with invalid imageId:', imageId);
       throw new Error('MetadataProvider::Empty imageId');
     }
 
@@ -67,6 +75,15 @@ class MetadataProvider {
     if (Array.isArray(imageId)) {
       return;
     }
+
+    // For imagePixelModule, try cache first (from cornerstone cache after image load)
+    if (query === 'imagePixelModule' && this.imagePixelFormatCache) {
+      const cachedFormat = this.imagePixelFormatCache.get(imageId);
+      if (cachedFormat) {
+        return cachedFormat;
+      }
+    }
+
     const instance = this._getInstance(imageId);
 
     if (query === INSTANCE) {
@@ -80,6 +97,23 @@ class MetadataProvider {
       if (customMetadata[imageURI]) {
         return customMetadata[imageURI];
       }
+    }
+
+    // Special handling for imagePixelModule when instance not available
+    if (!instance && query === 'imagePixelModule') {
+      console.warn('⚠️ MetadataProvider: No instance found for imagePixelModule query', { imageId });
+      // Return minimal defaults to prevent WADO image loader errors
+      console.log('🔧 Returning default pixel format');
+      return {
+        samplesPerPixel: 1,
+        photometricInterpretation: 'MONOCHROME2',
+        rows: undefined,
+        columns: undefined,
+        bitsAllocated: 16,
+        bitsStored: 16,
+        highBit: 15,
+        pixelRepresentation: 0,
+      };
     }
 
     return this.getTagFromInstance(query, instance, options);
@@ -146,15 +180,31 @@ class MetadataProvider {
         };
         break;
       case WADO_IMAGE_LOADER_TAGS.IMAGE_PIXEL_MODULE:
+        // NOTE: dicom-image-loader requires imagePixelModule to exist (it reads samplesPerPixel).
+        // In MADO mode, we still return synthesized values here; later, once the real DICOM is
+        // loaded, init.tsx patches the instance with the true pixel module values.
+        //
+        // For MADO synthesized instances, we return the instance values directly.
+        // The synthesized defaults are RGB for OT/Secondary Capture, which is correct for color images.
+        // If the actual image is grayscale, the IMAGE_LOADED handler will detect this via pixel data
+        // analysis and patch the instance BEFORE subsequent renders.
+
+        // Provide sane defaults for MADO synthesized data that may be missing pixel info
+        const samplesPerPixel = toNumber(instance.SamplesPerPixel);
+        const photometricInterpretation = instance.PhotometricInterpretation;
+        const bitsAllocated = toNumber(instance.BitsAllocated);
+        const bitsStored = toNumber(instance.BitsStored);
+        const highBit = toNumber(instance.HighBit);
+
         metadata = {
-          samplesPerPixel: toNumber(instance.SamplesPerPixel),
-          photometricInterpretation: instance.PhotometricInterpretation,
+          samplesPerPixel: samplesPerPixel !== undefined ? samplesPerPixel : 1,
+          photometricInterpretation: photometricInterpretation || 'MONOCHROME2',
           rows: toNumber(instance.Rows),
           columns: toNumber(instance.Columns),
-          bitsAllocated: toNumber(instance.BitsAllocated),
-          bitsStored: toNumber(instance.BitsStored),
-          highBit: toNumber(instance.HighBit),
-          pixelRepresentation: toNumber(instance.PixelRepresentation),
+          bitsAllocated: bitsAllocated !== undefined ? bitsAllocated : 16,
+          bitsStored: bitsStored !== undefined ? bitsStored : 16,
+          highBit: highBit !== undefined ? highBit : 15,
+          pixelRepresentation: toNumber(instance.PixelRepresentation) ?? 0,
           planarConfiguration: toNumber(instance.PlanarConfiguration),
           pixelAspectRatio: toNumber(instance.PixelAspectRatio),
           smallestPixelValue: toNumber(instance.SmallestPixelValue),
@@ -187,6 +237,13 @@ class MetadataProvider {
 
         break;
       case WADO_IMAGE_LOADER_TAGS.VOI_LUT_MODULE:
+        // For MADO synthesized instances, avoid returning synthesized window/level values.
+        // Return an empty object (instead of undefined) to be defensive against callers that
+        // don't null-check, while still omitting WC/WW so VOI can be computed from pixels.
+        if (instance._synthesizedFromMado && !instance._windowLevelPatched) {
+          return {};
+        }
+
         const { WindowCenter, WindowWidth, VOILUTFunction } = instance;
         if (WindowCenter == null || WindowWidth == null) {
           return;
@@ -454,8 +511,15 @@ class MetadataProvider {
   getUIDsFromImageID(imageId) {
     if (imageId.startsWith('wadors:')) {
       const strippedImageId = imageId.split('/studies/')[1];
+      if (!strippedImageId) {
+        console.error('MetadataProvider.getUIDsFromImageID: Malformed wadors: imageId, missing /studies/:', imageId);
+        return undefined;
+      }
       const splitImageId = strippedImageId.split('/');
-
+      if (!splitImageId[0] || !splitImageId[2] || !splitImageId[4]) {
+        console.error('MetadataProvider.getUIDsFromImageID: Malformed wadors: imageId, missing UIDs:', imageId, splitImageId);
+        return undefined;
+      }
       return {
         StudyInstanceUID: splitImageId[0], // Note: splitImageId[1] === 'series'
         SeriesInstanceUID: splitImageId[2], // Note: splitImageId[3] === 'instances'
@@ -568,7 +632,9 @@ const WADO_IMAGE_LOADER = {
     let isDefaultValueSetForRowCosine = false;
     let isDefaultValueSetForColumnCosine = false;
     let imageOrientationPatient;
-    if (PixelSpacing) {
+
+    // Safety check: ensure PixelSpacing is an array before destructuring
+    if (PixelSpacing && Array.isArray(PixelSpacing) && PixelSpacing.length >= 2) {
       [rowPixelSpacing, columnPixelSpacing] = PixelSpacing;
       const calibratedPixelSpacing = utilities.calibratedPixelSpacingMetadataProvider.get(
         'calibratedPixelSpacing',
@@ -586,7 +652,12 @@ const WADO_IMAGE_LOADER = {
       usingDefaultValues = true;
     }
 
-    if (ImageOrientationPatient) {
+    // Safety check: ensure ImageOrientationPatient is an array before calling slice
+    if (
+      ImageOrientationPatient &&
+      Array.isArray(ImageOrientationPatient) &&
+      ImageOrientationPatient.length >= 6
+    ) {
       rowCosines = toNumber(ImageOrientationPatient.slice(0, 3));
       columnCosines = toNumber(ImageOrientationPatient.slice(3, 6));
       imageOrientationPatient = toNumber(ImageOrientationPatient);

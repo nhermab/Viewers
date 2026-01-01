@@ -1,9 +1,32 @@
-import { utilities as csUtils } from '@cornerstonejs/core';
+import { utilities as csUtils, metaData } from '@cornerstonejs/core';
 
 export const DEFAULT_COLORMAP = 'hsv';
 export const DEFAULT_OPACITY = 0.5;
 export const DEFAULT_OPACITY_PERCENT = DEFAULT_OPACITY * 100;
 export const DERIVED_OVERLAY_MODALITIES = ['SEG', 'RTSTRUCT'];
+
+/**
+ * Safely checks if imageIds can form a valid volume.
+ * Returns false if metadata is missing or isValidVolume throws.
+ */
+function safeIsValidVolume(imageIds) {
+  if (!imageIds || imageIds.length === 0) {
+    return false;
+  }
+
+  try {
+    // Pre-check: ensure at least the first imageId has metadata
+    const firstImageId = imageIds[0];
+    const metadata = metaData.get('generalSeriesModule', firstImageId);
+    if (!metadata) {
+      return false;
+    }
+    return csUtils.isValidVolume(imageIds);
+  } catch (error) {
+    console.warn('Error checking if imageIds form valid volume:', error);
+    return false;
+  }
+}
 
 /**
  * Get modality-specific color and opacity settings from the customization service
@@ -60,7 +83,8 @@ export function getEnhancedDisplaySets({ viewportId, services }) {
     displaySetService.getDisplaySetByUID(displaySetUID)
   );
 
-  const backgroundCanBeVolume = csUtils.isValidVolume(viewportDisplaySets[0].imageIds || []);
+  const backgroundImageIds = viewportDisplaySets[0]?.imageIds || [];
+  const backgroundCanBeVolume = safeIsValidVolume(backgroundImageIds);
   const backgroundDisplaySet = viewportDisplaySets[0];
 
   const enhancedDisplaySets = otherDisplaySets.map(displaySet => {
@@ -101,7 +125,7 @@ export function getEnhancedDisplaySets({ viewportId, services }) {
       const imageIds = displaySet.imageIds || displaySet.images?.map(image => image.imageId);
       const isMultiframe = displaySet.isMultiFrame;
 
-      if (!isMultiframe && imageIds?.length > 0 && !csUtils.isValidVolume(imageIds)) {
+      if (!isMultiframe && imageIds?.length > 0 && !safeIsValidVolume(imageIds)) {
         return {
           ...displaySet,
           isOverlayable: false,

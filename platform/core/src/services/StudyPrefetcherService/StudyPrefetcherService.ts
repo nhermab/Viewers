@@ -180,6 +180,10 @@ class StudyPrefetcherService extends PubSubService {
   }
 
   private _addImageLoadingEventsListeners() {
+    if (!this.imageLoadEventsManager) {
+      console.warn('StudyPrefetcherService: imageLoadEventsManager is not set. Cannot add image loading event listeners.');
+      return [];
+    }
     const fnOnImageLoadCompleted = (imageId: string) => {
       // `sendNextRequests` must be called after image loaded/failed events
       // to make sure prefetch requests shall be sent as soon as the active

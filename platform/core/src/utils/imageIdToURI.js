@@ -6,6 +6,10 @@
  * @memberof Cache
  */
 export default function imageIdToURI(imageId) {
+  if (typeof imageId !== 'string') {
+    console.warn('imageIdToURI: imageId is not a string', imageId);
+    return '';
+  }
   const colonIndex = imageId.indexOf(':');
 
   return imageId.substring(colonIndex + 1);

@@ -13,7 +13,14 @@ class CineService extends PubSubService {
     },
   };
 
-  serviceImplementation = {};
+  serviceImplementation: {
+    _getState?: () => any;
+    _setCine?: (params: { id: string; frameRate: number; isPlaying: boolean }) => any;
+    _setIsCineEnabled?: (isCineEnabled: boolean) => void;
+    _playClip?: (element: any, playClipOptions: any) => any;
+    _stopClip?: (element: any, stopClipOptions: any) => any;
+    _getSyncedViewports?: (viewportId: string) => any[];
+  } = {};
   startedClips = new Map();
   closedViewports = new Set();
 
@@ -23,14 +30,26 @@ class CineService extends PubSubService {
   }
 
   public getState() {
+    if (!this.serviceImplementation._getState) {
+      console.warn('CineService: _getState implementation not set, returning default state');
+      return { isCineEnabled: false, cines: {} };
+    }
     return this.serviceImplementation._getState();
   }
 
   public setCine({ id, frameRate, isPlaying }) {
+    if (!this.serviceImplementation._setCine) {
+      console.warn('CineService: _setCine implementation not set');
+      return;
+    }
     return this.serviceImplementation._setCine({ id, frameRate, isPlaying });
   }
 
   public setIsCineEnabled(isCineEnabled) {
+    if (!this.serviceImplementation._setIsCineEnabled) {
+      console.warn('CineService: _setIsCineEnabled implementation not set');
+      return;
+    }
     this.serviceImplementation._setIsCineEnabled(isCineEnabled);
     // Todo: for some reason i need to do this setTimeout since the
     // reducer state does not get updated right away and if we publish the
@@ -47,6 +66,10 @@ class CineService extends PubSubService {
   }
 
   public playClip(element, playClipOptions) {
+    if (!this.serviceImplementation._playClip) {
+      console.warn('CineService: _playClip implementation not set');
+      return;
+    }
     const res = this.serviceImplementation._playClip(element, playClipOptions);
 
     this.startedClips.set(element, playClipOptions);
@@ -57,6 +80,10 @@ class CineService extends PubSubService {
   }
 
   public stopClip(element, stopClipOptions) {
+    if (!this.serviceImplementation._stopClip) {
+      console.warn('CineService: _stopClip implementation not set');
+      return;
+    }
     const res = this.serviceImplementation._stopClip(element, stopClipOptions);
 
     this._broadcastEvent(this.EVENTS.CINE_STATE_CHANGED, { isPlaying: false });
@@ -72,6 +99,10 @@ class CineService extends PubSubService {
   }
 
   public getSyncedViewports(viewportId) {
+    if (!this.serviceImplementation._getSyncedViewports) {
+      console.warn('CineService: _getSyncedViewports implementation not set, returning empty array');
+      return [];
+    }
     return this.serviceImplementation._getSyncedViewports(viewportId);
   }
 

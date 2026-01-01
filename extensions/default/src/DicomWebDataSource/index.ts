@@ -60,14 +60,18 @@ export type DicomWebConfig = {
   omitQuotationForMultipartRequest?: boolean;
   /** Whether the server supports fuzzy matching */
   supportsFuzzyMatching?: boolean;
+  /** Whether to enable study lazy loading */
+  enableStudyLazyLoad?: boolean;
+  /** Whether to disable QIDO queries */
+  disableQido?: boolean;
+  /** Whether to disable /metadata queries (for MADO-only workflows) */
+  disableMetadataQueries?: boolean;
   /** Whether the server supports wildcard matching */
   supportsWildcard?: boolean;
   /** Whether the server supports the native DICOM model */
   supportsNativeDICOMModel?: boolean;
   /** Whether to enable request tag */
   enableRequestTag?: boolean;
-  /** Whether to enable study lazy loading */
-  enableStudyLazyLoad?: boolean;
   /** Whether to enable bulkDataURI */
   bulkDataURI?: BulkDataURIConfig;
   /** Function that is called after the configuration is initialized */
@@ -212,24 +216,23 @@ function createDicomWebApi(dicomWebConfig: DicomWebConfig, servicesManager) {
     },
     query: {
       studies: {
-        mapParams: mapParams.bind(),
+        mapParams: mapParams,
         search: async function (origParams) {
           if ((dicomWebConfig as any).disableQido) {
             console.warn('QIDO is disabled (disableQido=true). Returning empty study results.');
             return [];
           }
           qidoDicomWebClient.headers = getAuthorizationHeader();
-          const { studyInstanceUid, seriesInstanceUid, ...mappedParams } =
-            mapParams(origParams, {
-              supportsFuzzyMatching: dicomWebConfig.supportsFuzzyMatching,
-              supportsWildcard: dicomWebConfig.supportsWildcard,
-            }) || {};
+          const mappedParams = mapParams(origParams, {
+            supportsFuzzyMatching: dicomWebConfig.supportsFuzzyMatching,
+            supportsWildcard: dicomWebConfig.supportsWildcard,
+          }) || {};
 
           const results = await qidoSearch(qidoDicomWebClient, undefined, undefined, mappedParams);
 
           return processResults(results);
         },
-        processResults: processResults.bind(),
+        processResults: processResults,
       },
       series: {
         search: async function (studyInstanceUid) {
@@ -516,6 +519,15 @@ function createDicomWebApi(dicomWebConfig: DicomWebConfig, servicesManager) {
       sortFunction,
       madeInClient
     ) => {
+      // Guard: Prohibit metadata queries if configured
+      if (dicomWebConfig.disableMetadataQueries) {
+        throw new Error(
+          '🚫 Metadata queries are disabled (disableMetadataQueries=true). ' +
+            'This datasource is configured for MADO-only workflows. ' +
+            'Metadata should be synthesized from MADO manifest, not fetched from server.'
+        );
+      }
+
       const enableStudyLazyLoad = false;
       wadoDicomWebClient.headers = generateWadoHeader(excludeTransferSyntax);
       // data is all SOPInstanceUIDs
@@ -590,6 +602,15 @@ function createDicomWebApi(dicomWebConfig: DicomWebConfig, servicesManager) {
       madeInClient = false,
       returnPromises = false
     ) => {
+      // Guard: Prohibit metadata queries if configured
+      if (dicomWebConfig.disableMetadataQueries) {
+        throw new Error(
+          '🚫 Metadata queries are disabled (disableMetadataQueries=true). ' +
+            'This datasource is configured for MADO-only workflows. ' +
+            'Metadata should be synthesized from MADO manifest, not fetched from server.'
+        );
+      }
+
       const enableStudyLazyLoad = true;
       wadoDicomWebClient.headers = generateWadoHeader(excludeTransferSyntax);
       // Get Series
@@ -734,7 +755,70 @@ function createDicomWebApi(dicomWebConfig: DicomWebConfig, servicesManager) {
         return imageIds;
       }
 
-      displaySet.images.forEach(instance => {
+      // Check if images have real position data for proper 3D sorting
+      // If they have ImagePositionPatient and ImageOrientationPatient, use position-based sorting
+      const hasRealGeometry = images.length > 0 &&
+        images.every(img =>
+          Array.isArray(img.ImagePositionPatient) &&
+          img.ImagePositionPatient.length === 3 &&
+          Array.isArray(img.ImageOrientationPatient) &&
+          img.ImageOrientationPatient.length === 6 &&
+          !img._madoPlaceholderGeometry
+        );
+
+      let sortedImages;
+      if (hasRealGeometry) {
+        // Use position-based sorting for proper 3D volume ordering
+        sortedImages = [...images];
+        try {
+          // Calculate scan axis normal from orientation
+          const firstImage = images[0];
+          const iop = firstImage.ImageOrientationPatient;
+          const rowCos = [iop[0], iop[1], iop[2]];
+          const colCos = [iop[3], iop[4], iop[5]];
+          const scanAxisNormal = [
+            rowCos[1] * colCos[2] - rowCos[2] * colCos[1],
+            rowCos[2] * colCos[0] - rowCos[0] * colCos[2],
+            rowCos[0] * colCos[1] - rowCos[1] * colCos[0]
+          ];
+
+          // Calculate distance along scan axis for each image
+          const refPos = firstImage.ImagePositionPatient;
+          const imageDistances = sortedImages.map(img => {
+            const pos = img.ImagePositionPatient;
+            const delta = [pos[0] - refPos[0], pos[1] - refPos[1], pos[2] - refPos[2]];
+            const distance = scanAxisNormal[0] * delta[0] + scanAxisNormal[1] * delta[1] + scanAxisNormal[2] * delta[2];
+            return { image: img, distance };
+          });
+
+          // Sort by distance
+          imageDistances.sort((a, b) => b.distance - a.distance);
+          sortedImages = imageDistances.map(item => item.image);
+        } catch (e) {
+          // Fall back to InstanceNumber sorting if position sort fails
+          console.debug('Position-based sorting failed, falling back to InstanceNumber', e);
+          sortedImages = [...images].sort((a, b) => {
+            const aNum = parseInt(a.InstanceNumber) || 0;
+            const bNum = parseInt(b.InstanceNumber) || 0;
+            return aNum - bNum || (a.SOPInstanceUID || '').localeCompare(b.SOPInstanceUID || '');
+          });
+        }
+      } else {
+        // Sort images by InstanceNumber to ensure correct order
+        // This is critical for MADO workflows where metadata is synthesized
+        sortedImages = [...images].sort((a, b) => {
+          const aNum = parseInt(a.InstanceNumber) || 0;
+          const bNum = parseInt(b.InstanceNumber) || 0;
+          if (aNum !== bNum) {
+            return aNum - bNum;
+          }
+          // Fallback to SOPInstanceUID for tie-breaking
+          return (a.SOPInstanceUID || '').localeCompare(b.SOPInstanceUID || '');
+        });
+      }
+
+      // Do NOT filter by pixelData here; let the image loader handle pixel data validation
+      sortedImages.forEach(instance => {
         const NumberOfFrames = instance.NumberOfFrames;
 
         if (NumberOfFrames > 1) {
@@ -751,7 +835,18 @@ function createDicomWebApi(dicomWebConfig: DicomWebConfig, servicesManager) {
         }
       });
 
-      return imageIds;
+      // Filter out undefined/null/empty imageIds and log if any are found
+      const filteredImageIds = imageIds.filter(id => typeof id === 'string' && id.length > 0);
+      if (filteredImageIds.length !== imageIds.length) {
+        // Log the invalid imageIds for debugging
+        console.warn('Filtered out invalid imageIds:', imageIds.filter(id => !id || typeof id !== 'string' || id.length === 0));
+      }
+      // Further filter to only allow wadors: or wadouri: imageIds
+      const validWadoImageIds = filteredImageIds.filter(id => id.startsWith('wadors:') || id.startsWith('wadouri:'));
+      if (validWadoImageIds.length !== filteredImageIds.length) {
+        console.warn('Filtered out non-wado imageIds:', filteredImageIds.filter(id => !(id.startsWith('wadors:') || id.startsWith('wadouri:'))));
+      }
+      return validWadoImageIds;
     },
     getImageIdsForInstance({ instance, frame = undefined }) {
       const imageIds = getImageId({
@@ -818,5 +913,29 @@ function retrieveBulkData(value, options = {}) {
     return ret;
   });
 }
+
+/**
+ * Validates that the pixel data buffer matches the expected size for the image metadata.
+ * Logs an error and returns false if invalid, true if valid.
+ */
+function validatePixelDataBuffer(image) {
+  if (!image || !image.pixelData) {
+    console.error('Image missing pixelData buffer. Skipping rendering.', image);
+    return false;
+  }
+  const { rows, columns, samplesPerPixel = 1, bitsAllocated = 8 } = image;
+  const expectedSize = rows * columns * samplesPerPixel * (bitsAllocated / 8);
+  if (image.pixelData.byteLength < expectedSize) {
+    console.error(
+      `Pixel data buffer too small: got ${image.pixelData.byteLength}, expected ${expectedSize}. Skipping rendering.`,
+      image
+    );
+    return false;
+  }
+  return true;
+}
+
+// Example usage: wherever wadors: images are loaded and before rendering, call validatePixelDataBuffer(image)
+// If false, skip rendering that image.
 
 export { createDicomWebApi, MadoParser, retrieveMadoMetadata, getMadoManifestUrl };
