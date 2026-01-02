@@ -10,6 +10,29 @@ export interface MadoInstance {
   numberOfFrames?: number;
   rows?: number;
   columns?: number;
+
+  // Prefetched metadata fields (populated by prefetchSeriesMetadata)
+  BitsAllocated?: number;
+  BitsStored?: number;
+  HighBit?: number;
+  PixelRepresentation?: number;
+  SamplesPerPixel?: number;
+  PhotometricInterpretation?: string;
+  PlanarConfiguration?: number;
+  pixelSpacing?: number[];
+  imageOrientationPatient?: number[];
+  imagePositionPatient?: number[];
+  sliceThickness?: number;
+  WindowCenter?: number | number[];
+  WindowWidth?: number | number[];
+  RescaleIntercept?: number;
+  RescaleSlope?: number;
+  RescaleType?: string;
+  FrameOfReferenceUID?: string;
+  TransferSyntaxUID?: string;
+
+  // Internal flags
+  _prefetchedMetadata?: boolean;
 }
 
 export interface MadoDisplaySet {

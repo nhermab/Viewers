@@ -20,7 +20,12 @@ export default function CineProvider({ children, service }) {
         const { id, frameRate, isPlaying = undefined } = action.payload;
         const cines = state.cines;
 
-        const syncedCineIds = service.getSyncedViewports(id).map(({ viewportId }) => viewportId);
+        // Only call getSyncedViewports if the concrete implementation has been registered
+        const syncedCineIds =
+          service && service.serviceImplementation && service.serviceImplementation._getSyncedViewports
+            ? service.getSyncedViewports(id).map(({ viewportId }) => viewportId)
+            : [];
+
         const cineIdsToUpdate = [id, ...syncedCineIds].filter(curId => {
           const currentCine = cines[curId] ?? {};
           const shouldUpdateFrameRate =
@@ -90,8 +95,14 @@ export default function CineProvider({ children, service }) {
     getState,
     setCine,
     setIsCineEnabled: isCineEnabled => service.setIsCineEnabled(isCineEnabled),
-    playClip: (element, playClipOptions) => service.playClip(element, playClipOptions),
-    stopClip: (element, stopClipOptions) => service.stopClip(element, stopClipOptions),
+    playClip: (element, playClipOptions) =>
+      service && service.serviceImplementation && service.serviceImplementation._playClip
+        ? service.playClip(element, playClipOptions)
+        : undefined,
+    stopClip: (element, stopClipOptions) =>
+      service && service.serviceImplementation && service.serviceImplementation._stopClip
+        ? service.stopClip(element, stopClipOptions)
+        : undefined,
     setViewportCineClosed: viewportId => service.setViewportCineClosed(viewportId),
     clearViewportCineClosed: viewportId => service.clearViewportCineClosed(viewportId),
     isViewportCineClosed: viewportId => service.isViewportCineClosed(viewportId),

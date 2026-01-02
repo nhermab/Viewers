@@ -13,7 +13,9 @@ function buildInstanceWadoUrl(config, instance) {
 
   const paramString = params.join('&');
 
-  return `${config.wadoUriRoot}?${paramString}`;
+  // Support multiple possible config keys for the WADO-URI root
+  const base = config.wadoUriRoot || config.wadoUri || config.wadoRoot || '';
+  return `${base}?${paramString}`;
 }
 
 /**

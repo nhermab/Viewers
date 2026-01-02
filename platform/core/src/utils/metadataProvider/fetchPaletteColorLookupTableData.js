@@ -22,12 +22,21 @@ export default function fetchPaletteColorLookupTableData(item, tag, descriptorTa
 }
 
 function _getPaletteColor(paletteColorLookupTableData, lutDescriptor) {
-  const numLutEntries = lutDescriptor[0];
-  const bits = lutDescriptor[2];
+  // Validate LUT descriptor before using it. The descriptor is expected to be an
+  // array-like [numLutEntries, firstMapped, bitsPerEntry]. If it's missing or
+  // malformed, we cannot build the LUT and should bail out gracefully.
+  if (!lutDescriptor || !('length' in lutDescriptor) || lutDescriptor.length < 3) {
+    // If there's no palette data provided, just return undefined rather than throwing.
+    if (!paletteColorLookupTableData) {
+      return undefined;
+    }
 
-  if (!paletteColorLookupTableData) {
+    console.warn('fetchPaletteColorLookupTableData: missing or invalid LUT descriptor', lutDescriptor);
     return undefined;
   }
+
+  const numLutEntries = lutDescriptor[0];
+  const bits = lutDescriptor[2];
 
   const arrayBufferToPaletteColorLUT = arraybuffer => {
     // Handle both ArrayBuffer and TypedArray inputs

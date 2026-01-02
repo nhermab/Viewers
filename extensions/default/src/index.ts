@@ -77,6 +77,15 @@ const defaultExtension: Types.Extensions.Extension = {
 
 export default defaultExtension;
 
+// Export prefetch cache functions for MADO integration
+export {
+  getPrefetchedImage,
+  hasPrefetchedImage,
+  clearPrefetchedImage,
+  clearAllPrefetchedImages,
+  prefetchSeriesFirstImages,
+} from './DicomWebDataSource/prefetchSeriesMetadata';
+
 export {
   ContextMenuController,
   CustomizableContextMenuTypes,

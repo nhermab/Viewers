@@ -281,4 +281,6 @@ export {
 
 // Export constants
 export { VOLUME_LOADER_SCHEME, DYNAMIC_VOLUME_LOADER_SCHEME } from './constants';
+// Re-export setPrefetchCache - it's defined in initWADOImageLoader.js
+export { setPrefetchCache } from './initWADOImageLoader.js';
 export default cornerstoneExtension;

@@ -1,6 +1,19 @@
 function buildInstanceWadoRsUri(instance, config) {
-  const { StudyInstanceUID, SeriesInstanceUID, SOPInstanceUID } = instance;
-  return `${config.wadoRoot}/studies/${StudyInstanceUID}/series/${SeriesInstanceUID}/instances/${SOPInstanceUID}`;
+  // Accept common UID property name variants
+  const StudyInstanceUID = instance.StudyInstanceUID || instance.studyInstanceUID || instance.StudyInstanceUid || instance.StudyInstanceUid;
+  const SeriesInstanceUID = instance.SeriesInstanceUID || instance.seriesInstanceUID || instance.SeriesInstanceUid || instance.SeriesInstanceUid;
+  const SOPInstanceUID = instance.SOPInstanceUID || instance.sopInstanceUID || instance.SOPInstanceUid || instance.SOPInstanceUid;
+
+  // Ensure base has no trailing slash
+  let base = config.wadoRoot || '';
+  base = base.replace(/\/+$/, '');
+
+  // If any UID or base is missing, bail out to avoid creating malformed URLs
+  if (!base || !StudyInstanceUID || !SeriesInstanceUID || !SOPInstanceUID) {
+    return null;
+  }
+
+  return `${base}/studies/${StudyInstanceUID}/series/${SeriesInstanceUID}/instances/${SOPInstanceUID}`;
 }
 
 function buildInstanceFrameWadoRsUri(instance, config, frame) {

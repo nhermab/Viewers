@@ -939,3 +939,10 @@ function validatePixelDataBuffer(image) {
 // If false, skip rendering that image.
 
 export { createDicomWebApi, MadoParser, retrieveMadoMetadata, getMadoManifestUrl };
+export {
+  prefetchSeriesFirstImages,
+  getPrefetchedImage,
+  hasPrefetchedImage,
+  clearPrefetchedImage,
+  clearAllPrefetchedImages,
+} from './prefetchSeriesMetadata';

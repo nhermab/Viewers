@@ -232,6 +232,12 @@ export function synthesizeSeriesMetadata(displaySet: MadoDisplaySet): any {
 
 /**
  * Creates instance-level metadata with physical defaults based on SOP Class.
+ *
+ * Priority for metadata values:
+ * 1. Prefetched metadata from actual DICOM file (highest priority)
+ * 2. Explicit values from MADO manifest instance
+ * 3. Modality-based defaults
+ * 4. Generic defaults
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function synthesizeInstanceMetadata(
@@ -245,6 +251,10 @@ export function synthesizeInstanceMetadata(
 
   const modalityPhysics = MODALITY_PHYSICS[modality] || {};
 
+  // Check if instance has prefetched metadata (from first image extraction)
+  const hasPrefetchedMetadata = (instance as any)._prefetchedMetadata === true;
+
+  // Prefer prefetched values, then instance values, then defaults
   const pixelSpacing = validateSpacing(
     (instance as any).pixelSpacing || (instance as any).imagerPixelSpacing || [1.0, 1.0]
   );
@@ -254,18 +264,46 @@ export function synthesizeInstanceMetadata(
 
   const sliceThickness = (instance as any).sliceThickness || (instance as any).SliceThickness || 1.0;
 
-  // --- COLOR MR OVERRIDE LOGIC ---
-  // If displaySet or instance has forceColor, treat as color MR
-  let samplesPerPixel = modalityPhysics.SamplesPerPixel || 1;
-  let photometricInterpretation = modalityPhysics.PhotometricInterpretation || 'MONOCHROME2';
+  // --- PIXEL MODULE WITH PREFETCH PRIORITY ---
+  // Priority: prefetched > instance explicit > modality defaults > generic defaults
+  let samplesPerPixel = (instance as any).SamplesPerPixel || modalityPhysics.SamplesPerPixel || 1;
+  let photometricInterpretation = (instance as any).PhotometricInterpretation || modalityPhysics.PhotometricInterpretation || 'MONOCHROME2';
+  let bitsAllocated = (instance as any).BitsAllocated || modalityPhysics.BitsAllocated || 16;
+  let bitsStored = (instance as any).BitsStored || modalityPhysics.BitsStored || 16;
+  let highBit = (instance as any).HighBit || modalityPhysics.HighBit || 15;
+  let pixelRepresentation = (instance as any).PixelRepresentation ?? modalityPhysics.PixelRepresentation ?? 0;
 
-  // --- COLOR AND PIXEL MODULE LOGIC ---
-  // Always prefer explicit values from the instance if present
-  if (instance?.SamplesPerPixel) {
-    samplesPerPixel = instance.SamplesPerPixel;
+  // Check for explicit palette descriptors / UID on the instance. If present,
+  // prefer PALETTE COLOR when SamplesPerPixel === 1.
+  const hasPaletteDescriptors =
+    (instance as any).RedPaletteColorLookupTableDescriptor ||
+    (instance as any).GreenPaletteColorLookupTableDescriptor ||
+    (instance as any).BluePaletteColorLookupTableDescriptor ||
+    (instance as any).PaletteColorLookupTableUID;
+
+  // Conservative photometric derivation:
+  // - If PhotometricInterpretation explicitly present, respect it.
+  // - Otherwise, if SamplesPerPixel === 3 -> RGB; if SamplesPerPixel === 1 and palette descriptors exist -> PALETTE COLOR;
+  // - Otherwise fall back to modality defaults or MONOCHROME2.
+  if (!((instance as any).PhotometricInterpretation)) {
+    if (samplesPerPixel === 3) {
+      photometricInterpretation = 'RGB';
+    } else if (samplesPerPixel === 1 && hasPaletteDescriptors) {
+      photometricInterpretation = 'PALETTE COLOR';
+    } else {
+      photometricInterpretation = modalityPhysics.PhotometricInterpretation || 'MONOCHROME2';
+    }
   }
-  if (instance?.PhotometricInterpretation) {
-    photometricInterpretation = instance.PhotometricInterpretation;
+
+  // Window/Level from prefetched or modality defaults
+  let windowCenter = (instance as any).WindowCenter || modalityPhysics.WindowCenter || 128;
+  let windowWidth = (instance as any).WindowWidth || modalityPhysics.WindowWidth || 256;
+  let rescaleIntercept = (instance as any).RescaleIntercept ?? modalityPhysics.RescaleIntercept ?? 0;
+  let rescaleSlope = (instance as any).RescaleSlope ?? modalityPhysics.RescaleSlope ?? 1;
+  let rescaleType = (instance as any).RescaleType || modalityPhysics.RescaleType;
+
+  if (hasPrefetchedMetadata) {
+    console.log(`✅ [MADO Synthesis] Using prefetched metadata for instance ${(instance as any).sopInstanceUID?.substring(0, 20)}...`);
   }
 
   // Robust color detection for MR: check for color hints in instance or manifest
@@ -304,49 +342,62 @@ export function synthesizeInstanceMetadata(
       (instance as any).ImagePositionPatient ||
       [0, 0, context.index * sliceThickness],
     FrameOfReferenceUID:
-      (displaySet as any).frameOfReferenceUID || `${(displaySet as any).seriesInstanceUID}.1`,
+      (instance as any).FrameOfReferenceUID ||
+      (displaySet as any).frameOfReferenceUID ||
+      `${(displaySet as any).seriesInstanceUID}.1`,
 
-    BitsAllocated: modalityPhysics.BitsAllocated || 16,
-    BitsStored: modalityPhysics.BitsStored || 16,
-    HighBit: modalityPhysics.HighBit || 15,
-    PixelRepresentation: modalityPhysics.PixelRepresentation ?? 0,
+    // Pixel module - use prefetched values (already computed with priority)
+    BitsAllocated: bitsAllocated,
+    BitsStored: bitsStored,
+    HighBit: highBit,
+    PixelRepresentation: pixelRepresentation,
     SamplesPerPixel: samplesPerPixel,
     PhotometricInterpretation: photometricInterpretation,
 
-    WindowCenter: modalityPhysics.WindowCenter || 128,
-    WindowWidth: modalityPhysics.WindowWidth || 256,
-    RescaleIntercept: modalityPhysics.RescaleIntercept ?? 0,
-    RescaleSlope: modalityPhysics.RescaleSlope ?? 1,
-    RescaleType: modalityPhysics.RescaleType,
+    // Window/Level - use prefetched values
+    WindowCenter: windowCenter,
+    WindowWidth: windowWidth,
+    RescaleIntercept: rescaleIntercept,
+    RescaleSlope: rescaleSlope,
+    RescaleType: rescaleType,
 
     // Internal OHIF fields (underscore prefix to mark as non-DICOM)
     _wadoRoot: context.wadoRoot,
     _wadoUri: context.wadoUri,
     _imageId: context.imageId,
-    TransferSyntaxUID: '1.2.840.10008.1.2.1',
+    TransferSyntaxUID: (instance as any).TransferSyntaxUID || '1.2.840.10008.1.2.1',
     _isSynthesized: true,
     _synthesizedFromMado: true,
+    _hasPrefetchedMetadata: hasPrefetchedMetadata,
   };
 
   // --- Force color metadata for color MR images ---
+  const instAny = instance as any;
   if (
-    instance.Modality === 'MR' &&
-    instance.NumberOfFrames > 1 &&
+    instAny.Modality === 'MR' &&
+    instAny.numberOfFrames > 1 &&
     (
-      instance.SamplesPerPixel === 3 ||
-      (instance.PhotometricInterpretation &&
-        (instance.PhotometricInterpretation.startsWith('YBR') ||
-          instance.PhotometricInterpretation.startsWith('RGB')))
+      instAny.SamplesPerPixel === 3 ||
+      (instAny.PhotometricInterpretation &&
+        (instAny.PhotometricInterpretation.startsWith('YBR') ||
+          instAny.PhotometricInterpretation.startsWith('RGB')))
     )
   ) {
-    instance.SamplesPerPixel = 3;
-    instance.PhotometricInterpretation = 'RGB';
-    console.log('[MADO] Synthesized color MR metadata', instance);
+    // Only force MR color if the instance is not a palette-color image.
+    const instHasPalette = instAny.RedPaletteColorLookupTableDescriptor || instAny.PaletteColorLookupTableUID;
+    if (!instHasPalette) {
+      instAny.SamplesPerPixel = 3;
+      instAny.PhotometricInterpretation = 'RGB';
+      console.log('[MADO] Synthesized color MR metadata', instance);
+    } else {
+      console.log('[MADO] MR instance has palette descriptors; preserving palette photometric interpretation', instance);
+    }
   }
 
   // Debug: log synthesized metadata for this instance
   if (process.env.NODE_ENV !== 'production') {
     // eslint-disable-next-line no-console
+    //TODO: debug logging
     console.log('[MADO] Synthesized metadata:', metadata);
   }
 

@@ -9,6 +9,18 @@ import { errorHandler, utils } from '@ohif/core';
 // Use require for compatibility
 const { registerVolumeLoader } = volumeLoader;
 
+// Prefetch cache for MADO images
+let prefetchCache = null;
+
+/**
+ * Set the prefetch cache module. Called by MADO integration.
+ * @param {Object} cacheModule - Module with getPrefetchedImage, hasPrefetchedImage, clearPrefetchedImage
+ */
+export function setPrefetchCache(cacheModule) {
+  prefetchCache = cacheModule;
+  console.log('[WADOImageLoader] Prefetch cache registered');
+}
+
 export default function initWADOImageLoader(
   userAuthenticationService,
   appConfig,
@@ -81,10 +93,29 @@ export default function initWADOImageLoader(
     });
   };
 
-  // Add debug logging for WADO-RS image load
+  // Add debug logging for WADO-RS image load and use prefetched images
   if (dicomImageLoader && dicomImageLoader.wadors && dicomImageLoader.wadors.loadImage) {
     const oldWadorsImageLoader = dicomImageLoader.wadors.loadImage;
     dicomImageLoader.wadors.loadImage = function (imageId, options) {
+      // Check if we have a prefetched image for this imageId
+      if (prefetchCache && prefetchCache.hasPrefetchedImage(imageId)) {
+        console.log('[WADO-RS Loader] Using prefetched image for:', imageId.substring(0, 80) + '...');
+        const arrayBuffer = prefetchCache.getPrefetchedImage(imageId);
+
+        // Clear from cache after use (one-time use)
+        prefetchCache.clearPrefetchedImage(imageId);
+
+        // Use the createImage function from dicom-image-loader if available
+        // Otherwise fall back to normal loading with the cached data
+        if (dicomImageLoader.wadors.createImage) {
+          return dicomImageLoader.wadors.createImage(imageId, arrayBuffer, options);
+        }
+
+        // If createImage is not available, we'll need to fall back to normal loading
+        // but the prefetch still helps with warming up browser caches
+        console.log('[WADO-RS Loader] createImage not available, using standard load');
+      }
+
       return oldWadorsImageLoader.call(this, imageId, options).then(image => {
         try {
           // Try to get metadata from the image or from the loader's metaDataManager

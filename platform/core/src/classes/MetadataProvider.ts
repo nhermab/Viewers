@@ -190,11 +190,31 @@ class MetadataProvider {
         // analysis and patch the instance BEFORE subsequent renders.
 
         // Provide sane defaults for MADO synthesized data that may be missing pixel info
-        const samplesPerPixel = toNumber(instance.SamplesPerPixel);
-        const photometricInterpretation = instance.PhotometricInterpretation;
+        // Prefer runtime/effective values (set by Cornerstone when an image is decoded)
+        // so we avoid attempting palette lookups for images that have already been
+        // decoded into RGB by the loader. Fall back to the DICOM tags otherwise.
+        const samplesPerPixel = toNumber(
+          instance._effectiveSamplesPerPixel ?? instance.SamplesPerPixel
+        );
+        const photometricInterpretation =
+          instance._effectivePhotometricInterpretation ?? instance.PhotometricInterpretation;
         const bitsAllocated = toNumber(instance.BitsAllocated);
         const bitsStored = toNumber(instance.BitsStored);
         const highBit = toNumber(instance.HighBit);
+
+        // Determine whether this instance should be treated as a PALETTE COLOR image.
+        // Only attempt to fetch palette lookup tables when PhotometricInterpretation explicitly
+        // indicates 'PALETTE COLOR' or when SamplesPerPixel === 1 and palette descriptors/UIDs exist.
+        const hasPaletteDescriptors =
+          instance.RedPaletteColorLookupTableDescriptor ||
+          instance.GreenPaletteColorLookupTableDescriptor ||
+          instance.BluePaletteColorLookupTableDescriptor ||
+          instance.PaletteColorLookupTableUID;
+
+        const isPaletteColor =
+          (photometricInterpretation &&
+            String(photometricInterpretation).toUpperCase() === 'PALETTE COLOR') ||
+          (samplesPerPixel === 1 && !!hasPaletteDescriptors);
 
         metadata = {
           samplesPerPixel: samplesPerPixel !== undefined ? samplesPerPixel : 1,
@@ -218,21 +238,27 @@ class MetadataProvider {
           bluePaletteColorLookupTableDescriptor: toNumber(
             instance.BluePaletteColorLookupTableDescriptor
           ),
-          redPaletteColorLookupTableData: fetchPaletteColorLookupTableData(
-            instance,
-            'RedPaletteColorLookupTableData',
-            'RedPaletteColorLookupTableDescriptor'
-          ),
-          greenPaletteColorLookupTableData: fetchPaletteColorLookupTableData(
-            instance,
-            'GreenPaletteColorLookupTableData',
-            'GreenPaletteColorLookupTableDescriptor'
-          ),
-          bluePaletteColorLookupTableData: fetchPaletteColorLookupTableData(
-            instance,
-            'BluePaletteColorLookupTableData',
-            'BluePaletteColorLookupTableDescriptor'
-          ),
+          redPaletteColorLookupTableData: isPaletteColor
+            ? fetchPaletteColorLookupTableData(
+                instance,
+                'RedPaletteColorLookupTableData',
+                'RedPaletteColorLookupTableDescriptor'
+              )
+            : undefined,
+          greenPaletteColorLookupTableData: isPaletteColor
+            ? fetchPaletteColorLookupTableData(
+                instance,
+                'GreenPaletteColorLookupTableData',
+                'GreenPaletteColorLookupTableDescriptor'
+              )
+            : undefined,
+          bluePaletteColorLookupTableData: isPaletteColor
+            ? fetchPaletteColorLookupTableData(
+                instance,
+                'BluePaletteColorLookupTableData',
+                'BluePaletteColorLookupTableDescriptor'
+              )
+            : undefined,
         };
 
         break;

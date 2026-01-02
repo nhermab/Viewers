@@ -2,11 +2,11 @@ import * as cornerstone from '@cornerstonejs/core';
 import * as cornerstoneTools from '@cornerstonejs/tools';
 import { init as cs3DInit, eventTarget, EVENTS, cache, imageLoadPoolManager, metaData } from '@cornerstonejs/core';
 
-import initWADOImageLoader from './initWADOImageLoader';
+import initWADOImageLoader, { setPrefetchCache } from './initWADOImageLoader';
 import initCornerstoneTools from './initCornerstoneTools';
 import initStudyPrefetcherService from './initStudyPrefetcherService';
 
-import { classes, DicomMetadataStore } from '@ohif/core';
+import { classes, DicomMetadataStore, utils } from '@ohif/core';
 
 // Global cache for image pixel format information.
 // Used by the metadata provider to return correct imagePixelModule values
@@ -166,6 +166,7 @@ export default async function init({
         return;
       }
 
+      //TODO: debug logging
       console.log('🔍 Image loaded:', {
         imageId: imageId.substring(0, 100) + '...',
         width: effectiveImage.width,
@@ -174,9 +175,13 @@ export default async function init({
         columns: effectiveImage.columns,
         samplesPerPixel: effectiveImage.samplesPerPixel,
         photometricInterpretation: effectiveImage.photometricInterpretation,
+        color: effectiveImage.color,
+        rgba: effectiveImage.rgba,
         instanceBefore: {
           SamplesPerPixel: instance.SamplesPerPixel,
           PhotometricInterpretation: instance.PhotometricInterpretation,
+          NumberOfFrames: instance.NumberOfFrames,
+          hasPerFrameFunctionalGroups: !!instance.PerFrameFunctionalGroupsSequence,
         },
       });
 
@@ -186,6 +191,58 @@ export default async function init({
       if (rows) instance.Rows = rows;
       if (cols) instance.Columns = cols;
 
+      // --- Geometry patching ---
+      let geometryPatched = false;
+
+      // For multiframe images, check if geometry is in PerFrameFunctionalGroupsSequence or SharedFunctionalGroupsSequence
+      const isMultiframe = instance.NumberOfFrames > 1;
+      if (isMultiframe) {
+        // Check if we have functional group sequences with geometry
+        const hasPerFrameGeometry = instance.PerFrameFunctionalGroupsSequence?.[0]?.PlanePositionSequence?.[0]?.ImagePositionPatient;
+        const hasSharedOrientation = instance.SharedFunctionalGroupsSequence?.[0]?.PlaneOrientationSequence?.[0]?.ImageOrientationPatient;
+        const hasSharedPixelMeasures = instance.SharedFunctionalGroupsSequence?.[0]?.PixelMeasuresSequence?.[0]?.PixelSpacing;
+
+        if (hasPerFrameGeometry || hasSharedOrientation || hasSharedPixelMeasures) {
+          console.log('✅ Multiframe DICOM has functional group geometry - marking as patched');
+          instance._geometryPatched = true;
+          geometryPatched = true;
+        }
+      }
+
+      // Patch geometry fields from loaded image if available
+      if (effectiveImage.imagePositionPatient) {
+        instance.ImagePositionPatient = effectiveImage.imagePositionPatient;
+      }
+      if (effectiveImage.imageOrientationPatient) {
+        instance.ImageOrientationPatient = effectiveImage.imageOrientationPatient;
+      }
+      if (effectiveImage.pixelSpacing) {
+        instance.PixelSpacing = effectiveImage.pixelSpacing;
+      }
+
+      // Check if all required geometry fields are present and valid (for single-frame or if already extracted)
+      if (!geometryPatched &&
+        instance.Rows && instance.Columns &&
+        Array.isArray(instance.ImagePositionPatient) && instance.ImagePositionPatient.length === 3 &&
+        Array.isArray(instance.ImageOrientationPatient) && instance.ImageOrientationPatient.length === 6 &&
+        Array.isArray(instance.PixelSpacing) && instance.PixelSpacing.length === 2
+      ) {
+        instance._geometryPatched = true;
+        geometryPatched = true;
+      }
+
+      // Extra debug logging for geometry
+      console.log('✅ Geometry patch:', {
+        isMultiframe,
+        Rows: instance.Rows,
+        Columns: instance.Columns,
+        ImagePositionPatient: instance.ImagePositionPatient,
+        ImageOrientationPatient: instance.ImageOrientationPatient,
+        PixelSpacing: instance.PixelSpacing,
+        hasPerFrameGeometry: instance.PerFrameFunctionalGroupsSequence?.[0]?.PlanePositionSequence?.[0]?.ImagePositionPatient ? 'YES' : 'NO',
+        _geometryPatched: geometryPatched
+      });
+
       // --- VOI: for synthesized data, compute from pixel range if possible ---
       const isSynth = instance._isSynthesized || instance._synthesizedFromMado;
       if (!instance._windowLevelPatched) {
@@ -194,16 +251,16 @@ export default async function init({
 
         // Use DICOM-provided values for non-synth, otherwise compute.
         if (!isSynth && effectiveImage.windowCenter !== undefined && effectiveImage.windowWidth !== undefined) {
-          const wc = Array.isArray(effectiveImage.windowCenter)
+          const windowCenter = Array.isArray(effectiveImage.windowCenter)
             ? effectiveImage.windowCenter[0]
             : effectiveImage.windowCenter;
-          const ww = Array.isArray(effectiveImage.windowWidth)
+          const windowWidth = Array.isArray(effectiveImage.windowWidth)
             ? effectiveImage.windowWidth[0]
             : effectiveImage.windowWidth;
 
-          if (wc !== undefined && ww !== undefined && ww > 0) {
-            instance.WindowCenter = wc;
-            instance.WindowWidth = ww;
+          if (windowCenter !== undefined && windowWidth !== undefined && windowWidth > 0) {
+            instance.WindowCenter = windowCenter;
+            instance.WindowWidth = windowWidth;
             instance._windowLevelPatched = true;
           }
         } else if (min !== undefined && max !== undefined) {
@@ -218,25 +275,98 @@ export default async function init({
 
       // --- Pixel module: always use DICOM metadata if present ---
       if (!instance._pixelModulePatched && rows && cols) {
-        let samplesPerPixel = instance.SamplesPerPixel;
-        let photometricInterpretation = instance.PhotometricInterpretation;
+        let samplesPerPixel = effectiveImage.samplesPerPixel;
+        let photometricInterpretation = effectiveImage.photometricInterpretation;
 
-        // If the instance is synthesized, always overwrite with loaded image values if available
-        if (instance._isSynthesized || instance._synthesizedFromMado) {
-          if (effectiveImage.samplesPerPixel !== undefined) {
-            samplesPerPixel = effectiveImage.samplesPerPixel;
-            console.log('📋 Overwriting synthesized SamplesPerPixel with loaded image:', samplesPerPixel);
-          }
-          if (effectiveImage.photometricInterpretation) {
-            photometricInterpretation = effectiveImage.photometricInterpretation;
-            console.log('📋 Overwriting synthesized PhotometricInterpretation with loaded image:', photometricInterpretation);
-          }
+        // Detect color from image properties
+        const isColorImage = effectiveImage.color === true ||
+                            effectiveImage.rgba === true ||
+                            (effectiveImage.samplesPerPixel && effectiveImage.samplesPerPixel > 1);
+
+        // If we detected color from the image loader
+        if (isColorImage && !samplesPerPixel) {
+          samplesPerPixel = 3;
+        }
+        if (isColorImage && !photometricInterpretation) {
+          photometricInterpretation = 'RGB';
         }
 
+        // If image loader didn't provide values, check what's already in the instance metadata
+        // (this might be from actual DICOM metadata that was loaded before synthesis)
+        if (samplesPerPixel === undefined || samplesPerPixel === null) {
+          samplesPerPixel = instance.SamplesPerPixel || 1;
+        }
+        if (!photometricInterpretation) {
+          photometricInterpretation = instance.PhotometricInterpretation || 'MONOCHROME2';
+        }
+
+        // Log what we're using
+        console.log('📋 Pixel module values determined:', {
+          samplesPerPixel,
+          photometricInterpretation,
+          sources: {
+            effectiveImageSamplesPerPixel: effectiveImage.samplesPerPixel,
+            effectiveImageColor: effectiveImage.color,
+            effectiveImagePhotometric: effectiveImage.photometricInterpretation,
+            instanceSamplesPerPixel: instance.SamplesPerPixel,
+            instancePhotometric: instance.PhotometricInterpretation,
+          }
+        });
+
         // Always set the instance to the final values (DICOM preferred)
-        instance.SamplesPerPixel = samplesPerPixel;
-        instance.PhotometricInterpretation = photometricInterpretation;
+        // Preserve original DICOM pixel module values for debugging/auditing
+        if (!instance._originalPixelModule) {
+          instance._originalPixelModule = {
+            SamplesPerPixel: instance.SamplesPerPixel,
+            PhotometricInterpretation: instance.PhotometricInterpretation,
+          };
+        }
+
+        // Decide whether to overwrite the original DICOM tags.
+        // We should overwrite when the instance is synthesized (MADO) or when
+        // the original tags are missing/undefined. For real DICOM instances, keep
+        // the original tags intact and store effective/runtime values separately.
+        const shouldOverwriteInstanceTags =
+          !!instance._synthesizedFromMado || !!instance._isSynthesized ||
+          !instance.SamplesPerPixel || !instance.PhotometricInterpretation;
+
+        if (shouldOverwriteInstanceTags) {
+          // Overwrite original tags so subsequent metadata consumers see the actual
+          // pixel format (this is necessary when MADO provided synthetic metadata).
+          instance.SamplesPerPixel = samplesPerPixel;
+          instance.PhotometricInterpretation = photometricInterpretation;
+          console.log('[MADO] Overwriting instance pixel module with effective image values for rendering', {
+            sopInstanceUID: instance.SOPInstanceUID,
+            overwrittenSamplesPerPixel: samplesPerPixel,
+            overwrittenPhotometricInterpretation: photometricInterpretation,
+          });
+        } else {
+          // Preserve original DICOM tags; expose the runtime/effective values on
+          // the instance so renderers and consumers that need them can use them.
+          instance._effectiveSamplesPerPixel = samplesPerPixel;
+          instance._effectivePhotometricInterpretation = photometricInterpretation;
+          console.log('[Cornerstone] Preserving original DICOM pixel module; storing effective values separately', {
+            sopInstanceUID: instance.SOPInstanceUID,
+            originalSamplesPerPixel: instance._originalPixelModule.SamplesPerPixel,
+            originalPhotometricInterpretation: instance._originalPixelModule.PhotometricInterpretation,
+            effectiveSamplesPerPixel: samplesPerPixel,
+            effectivePhotometricInterpretation: photometricInterpretation,
+          });
+        }
+
         instance._pixelModulePatched = true;
+
+        // Extra debug logging
+        console.log('✅ Final pixel module values:', {
+          SamplesPerPixel: samplesPerPixel,
+          PhotometricInterpretation: photometricInterpretation,
+          Source: {
+            effectiveImageSamplesPerPixel: effectiveImage.samplesPerPixel,
+            effectiveImagePhotometricInterpretation: effectiveImage.photometricInterpretation,
+            instanceSamplesPerPixel: instance.SamplesPerPixel,
+            instancePhotometricInterpretation: instance.PhotometricInterpretation,
+          }
+        });
 
         // Cache for future queries
         const pixelFormat = {
@@ -261,6 +391,82 @@ export default async function init({
     }
   };
 
+  // Track which series have been re-evaluated for reconstructability
+  const seriesReEvaluated = new Set<string>();
+
+  const reEvaluateReconstructability = (seriesInstanceUID: string) => {
+    if (seriesReEvaluated.has(seriesInstanceUID)) {
+      return; // Already re-evaluated
+    }
+
+    try {
+      const { displaySetService } = servicesManager.services;
+      if (!displaySetService) {
+        return;
+      }
+
+      // Find display sets for this series
+      const displaySets = displaySetService.getDisplaySetsForSeries(seriesInstanceUID);
+      if (!displaySets || displaySets.length === 0) {
+        return;
+      }
+
+      // Get all instances for the series from the display set
+      const instances = displaySets[0].images || [];
+      if (!instances || instances.length === 0) {
+        return;
+      }
+
+      // Check if geometry has been patched for at least some instances
+      const patchedInstances = instances.filter(inst => inst._geometryPatched);
+      if (patchedInstances.length === 0) {
+        return; // No geometry patched yet
+      }
+
+      // Re-evaluate reconstructability using the patched metadata
+      const { isDisplaySetReconstructable } = utils;
+      if (!isDisplaySetReconstructable) {
+        console.warn('isDisplaySetReconstructable not available');
+        return;
+      }
+
+      const reconstructabilityInfo = isDisplaySetReconstructable(instances, appConfig);
+      const newIsReconstructable = reconstructabilityInfo.value;
+
+      console.log(`🔄 Re-evaluating reconstructability for series ${seriesInstanceUID}:`, {
+        oldValue: displaySets[0].isReconstructable,
+        newValue: newIsReconstructable,
+        patchedInstances: patchedInstances.length,
+        totalInstances: instances.length,
+      });
+
+      // Update all display sets for this series
+      displaySets.forEach(ds => {
+        if (ds.isReconstructable !== newIsReconstructable) {
+          ds.isReconstructable = newIsReconstructable;
+          ds.countIcon = newIsReconstructable ? 'icon-mpr' : undefined;
+
+          // Clear the NOT_RECONSTRUCTABLE message if now reconstructable
+          if (newIsReconstructable && ds.messages?.messages) {
+            const NOT_RECONSTRUCTABLE_CODE = 3; // DisplaySetMessage.CODES.NOT_RECONSTRUCTABLE
+            ds.messages.messages = ds.messages.messages.filter(msg => msg.id !== NOT_RECONSTRUCTABLE_CODE);
+            console.log(`✅ Cleared NOT_RECONSTRUCTABLE message from display set ${ds.displaySetInstanceUID}`);
+          }
+
+          console.log(`✅ Updated display set ${ds.displaySetInstanceUID}: isReconstructable = ${newIsReconstructable}`);
+        }
+      });
+
+      // Mark as re-evaluated
+      seriesReEvaluated.add(seriesInstanceUID);
+
+      // Notify the display set service of the update
+      displaySetService.setDisplaySets(displaySetService.getActiveDisplaySets());
+    } catch (error) {
+      console.error('Error re-evaluating reconstructability:', error);
+    }
+  };
+
   const onImageLoaded = (evt: any) => {
     const detail = evt?.detail;
     const imageId = detail?.imageId ?? detail?.image?.imageId;
@@ -269,6 +475,17 @@ export default async function init({
     }
 
     patchMetadataFromCornerstone(imageId, detail?.image);
+
+    // After patching, check if we should re-evaluate reconstructability
+    try {
+      const uids = metadataProvider.getUIDsFromImageID(imageId);
+      if (uids?.SeriesInstanceUID) {
+        // Re-evaluate after a short delay to allow multiple images to load
+        setTimeout(() => reEvaluateReconstructability(uids.SeriesInstanceUID), 500);
+      }
+    } catch (error) {
+      // Ignore errors in re-evaluation
+    }
   };
 
   eventTarget.removeEventListener?.(EVENTS.IMAGE_LOADED, onImageLoaded as any);
@@ -281,6 +498,27 @@ export default async function init({
     appConfig,
     extensionManager
   );
+
+  // Set up the prefetch cache for MADO workflows
+  // The prefetch cache is populated by prefetchSeriesMetadata.ts when loading MADO manifests
+  // This allows reusing prefetched images instead of fetching them again
+  try {
+    // Dynamically import to avoid circular dependencies
+    import('@ohif/extension-default').then((defaultExtension) => {
+      if (defaultExtension.getPrefetchedImage && defaultExtension.hasPrefetchedImage && defaultExtension.clearPrefetchedImage) {
+        setPrefetchCache({
+          getPrefetchedImage: defaultExtension.getPrefetchedImage,
+          hasPrefetchedImage: defaultExtension.hasPrefetchedImage,
+          clearPrefetchedImage: defaultExtension.clearPrefetchedImage,
+        });
+        console.log('[Cornerstone Init] Prefetch cache connected to MADO prefetch system');
+      }
+    }).catch((err) => {
+      console.warn('[Cornerstone Init] Could not set up prefetch cache:', err);
+    });
+  } catch (err) {
+    console.warn('[Cornerstone Init] Error setting up prefetch cache:', err);
+  }
 
   // Ensure StudyPrefetcherService is initialized with event manager
   initStudyPrefetcherService(servicesManager);

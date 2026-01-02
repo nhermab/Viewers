@@ -113,8 +113,8 @@ window.config = {
         wadoRoot: 'https://ihebelgium.ehealthhub.be/orthanc/dicom-web/wado-rs/',
         disableQido: true,
         disableMetadataQueries: true, // Prohibit /metadata queries - use MADO manifest only
-        qidoSupportsIncludeField: true,
-        supportsReject: false,
+        qidoSupportsIncludeField: false,
+        supportsReject: true,
         imageRendering: 'wadors',
         thumbnailRendering: 'wadors',
         enableStudyLazyLoad: true,
