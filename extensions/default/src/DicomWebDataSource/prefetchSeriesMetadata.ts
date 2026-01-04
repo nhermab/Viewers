@@ -20,13 +20,18 @@ export interface ExtractedSeriesMetadata {
   SamplesPerPixel?: number;
   PhotometricInterpretation?: string;
   PlanarConfiguration?: number;
+  PixelAspectRatio?: number;
+  SmallestPixelValue?: number;
+  LargestPixelValue?: number;
 
   // Image plane module
   PixelSpacing?: number[];
+  ImagerPixelSpacing?: number[];
   ImageOrientationPatient?: number[];
   ImagePositionPatient?: number[];
   SliceThickness?: number;
   SpacingBetweenSlices?: number;
+  SliceLocation?: number;
 
   // Window/Level
   WindowCenter?: number | number[];
@@ -34,6 +39,7 @@ export interface ExtractedSeriesMetadata {
   RescaleIntercept?: number;
   RescaleSlope?: number;
   RescaleType?: string;
+  VOILUTFunction?: string;
 
   // Frame of reference
   FrameOfReferenceUID?: string;
@@ -42,9 +48,48 @@ export interface ExtractedSeriesMetadata {
   NumberOfFrames?: number;
   PerFrameFunctionalGroupsSequence?: any[];
   SharedFunctionalGroupsSequence?: any[];
+  FrameTime?: number;
+  FrameIncrementPointer?: string;
 
   // Transfer syntax
   TransferSyntaxUID?: string;
+
+  // Image identification
+  ImageType?: string[];
+  AcquisitionNumber?: number;
+  AcquisitionDate?: string;
+  AcquisitionTime?: string;
+  InstanceNumber?: number;
+
+  // Lossy compression info
+  LossyImageCompression?: string;
+  LossyImageCompressionRatio?: number;
+  LossyImageCompressionMethod?: string;
+
+  // Palette Color Lookup Table
+  RedPaletteColorLookupTableDescriptor?: number[];
+  GreenPaletteColorLookupTableDescriptor?: number[];
+  BluePaletteColorLookupTableDescriptor?: number[];
+  RedPaletteColorLookupTableData?: number[];
+  GreenPaletteColorLookupTableData?: number[];
+  BluePaletteColorLookupTableData?: number[];
+  PaletteColorLookupTableUID?: string;
+
+  // Segmented Palette Color Lookup Table (0028,1221-1223)
+  SegmentedRedPaletteColorLookupTableData?: number[];
+  SegmentedGreenPaletteColorLookupTableData?: number[];
+  SegmentedBluePaletteColorLookupTableData?: number[];
+
+  // Ultrasound calibration
+  SequenceOfUltrasoundRegions?: any[];
+
+  // PET specific
+  CorrectedImage?: string[];
+  Units?: string;
+  DecayCorrection?: string;
+  RadiopharmaceuticalInformationSequence?: any[];
+  FrameReferenceTime?: number;
+  ActualFrameDuration?: number;
 }
 
 /**
@@ -104,11 +149,33 @@ function mapDictToMetadata(dict: any): ExtractedSeriesMetadata {
     if (!element || element.Value === undefined || element.Value === null) return undefined;
 
     const v = element.Value;
+
+    // Handle TypedArrays directly (if Value is just the array)
+    if (ArrayBuffer.isView(v)) {
+      return Array.from(v as any);
+    }
+
     if (Array.isArray(v) && v.length === 1 && typeof v[0] === 'string' && v[0].includes('\\')) {
       return v[0].split('\\').map((s: string) => parseFloat(s)).filter((n: number) => Number.isFinite(n));
     }
 
     if (Array.isArray(v)) {
+      // Handle case where Value contains a single TypedArray or ArrayBuffer (common in dcmjs for OW/OB)
+      if (v.length === 1) {
+        if (ArrayBuffer.isView(v[0])) {
+          return Array.from(v[0] as any);
+        }
+        if (v[0] instanceof ArrayBuffer) {
+          const vr = element.vr;
+          // OW is 16-bit words
+          if ((vr === 'OW' || vr === 'US' || vr === 'SS') && v[0].byteLength % 2 === 0) {
+            return Array.from(new Uint16Array(v[0]));
+          }
+          // Default to byte array
+          return Array.from(new Uint8Array(v[0]));
+        }
+      }
+
       const out = v.map((x: any) => (typeof x === 'number' ? x : typeof x === 'string' ? parseFloat(x) : undefined)).filter((n: any) => n !== undefined);
       return out.length ? out : undefined;
     }
@@ -122,6 +189,7 @@ function mapDictToMetadata(dict: any): ExtractedSeriesMetadata {
   };
 
   const metadata: ExtractedSeriesMetadata = {
+    // Image Pixel Module
     Rows: getValue('00280010'),
     Columns: getValue('00280011'),
     BitsAllocated: getValue('00280100'),
@@ -131,23 +199,117 @@ function mapDictToMetadata(dict: any): ExtractedSeriesMetadata {
     SamplesPerPixel: getValue('00280002'),
     PhotometricInterpretation: getValue('00280004'),
     PlanarConfiguration: getValue('00280006'),
+    PixelAspectRatio: getValue('00280034'),
+    SmallestPixelValue: getValue('00280106'),
+    LargestPixelValue: getValue('00280107'),
+
+    // Image Plane Module
     PixelSpacing: getArray('00280030'),
+    ImagerPixelSpacing: getArray('00181164'),
     ImageOrientationPatient: getArray('00200037'),
     ImagePositionPatient: getArray('00200032'),
     SliceThickness: getValue('00180050'),
     SpacingBetweenSlices: getValue('00180088'),
+    SliceLocation: getValue('00201041'),
+
+    // VOI LUT Module
     RescaleIntercept: getValue('00281052'),
     RescaleSlope: getValue('00281053'),
     RescaleType: getValue('00281054'),
+    VOILUTFunction: getValue('00281056'),
+
+    // Frame of Reference
     FrameOfReferenceUID: getValue('00200052'),
+
+    // Multi-frame
     NumberOfFrames: getValue('00280008'),
+    FrameTime: getValue('00181063'),
+    FrameIncrementPointer: getValue('00280009'),
+
+    // Image Identification
+    ImageType: getArray('00080008') as unknown as string[],
+    AcquisitionNumber: getValue('00200012'),
+    AcquisitionDate: getValue('00080022'),
+    AcquisitionTime: getValue('00080032'),
+    InstanceNumber: getValue('00200013'),
+
+    // Lossy compression info
+    LossyImageCompression: getValue('00282110'),
+    LossyImageCompressionRatio: getValue('00282112'),
+    LossyImageCompressionMethod: getValue('00282114'),
+
+    // Palette Color Lookup Table
+    RedPaletteColorLookupTableDescriptor: getArray('00281101'),
+    GreenPaletteColorLookupTableDescriptor: getArray('00281102'),
+    BluePaletteColorLookupTableDescriptor: getArray('00281103'),
+    RedPaletteColorLookupTableData: getArray('00281201'),
+    GreenPaletteColorLookupTableData: getArray('00281202'),
+    BluePaletteColorLookupTableData: getArray('00281203'),
+    PaletteColorLookupTableUID: getValue('00281199'),
+
+    // Segmented Palette Color Lookup Table
+    SegmentedRedPaletteColorLookupTableData: getArray('00281221'),
+    SegmentedGreenPaletteColorLookupTableData: getArray('00281222'),
+    SegmentedBluePaletteColorLookupTableData: getArray('00281223'),
+
+    // PET specific
+    CorrectedImage: getArray('00280051') as unknown as string[],
+    Units: getValue('00541001'),
+    DecayCorrection: getValue('00541102'),
+    FrameReferenceTime: getValue('00541300'),
+    ActualFrameDuration: getValue('00181242'),
   };
+
+  // Handle Ultrasound calibration sequence - get raw sequence value
+  const usRegionsElement = findElement('00186011');
+  if (usRegionsElement?.Value) {
+    metadata.SequenceOfUltrasoundRegions = usRegionsElement.Value;
+  }
+
+  // Handle Radiopharmaceutical sequence for PET
+  const radioSeqElement = findElement('00540016');
+  if (radioSeqElement?.Value) {
+    metadata.RadiopharmaceuticalInformationSequence = radioSeqElement.Value;
+  }
+
+  // Handle PerFrameFunctionalGroupsSequence for enhanced DICOM
+  const perFrameElement = findElement('52009230');
+  if (perFrameElement?.Value) {
+    metadata.PerFrameFunctionalGroupsSequence = perFrameElement.Value;
+  }
+
+  // Handle SharedFunctionalGroupsSequence for enhanced DICOM
+  const sharedFGElement = findElement('52009229');
+  if (sharedFGElement?.Value) {
+    metadata.SharedFunctionalGroupsSequence = sharedFGElement.Value;
+  }
 
   // Handle Window Center/Width (can be single value or array)
   const wc = getArray('00281050');
   const ww = getArray('00281051');
   if (wc) metadata.WindowCenter = wc.length === 1 ? wc[0] : wc;
   if (ww) metadata.WindowWidth = ww.length === 1 ? ww[0] : ww;
+
+  // Log palette color data if found
+  if (metadata.RedPaletteColorLookupTableDescriptor) {
+    console.log('[MADO] mapDictToMetadata found palette color data:', {
+      redDescriptor: metadata.RedPaletteColorLookupTableDescriptor,
+      greenDescriptor: metadata.GreenPaletteColorLookupTableDescriptor,
+      blueDescriptor: metadata.BluePaletteColorLookupTableDescriptor,
+      redDataLength: metadata.RedPaletteColorLookupTableData?.length,
+      greenDataLength: metadata.GreenPaletteColorLookupTableData?.length,
+      blueDataLength: metadata.BluePaletteColorLookupTableData?.length,
+      uid: metadata.PaletteColorLookupTableUID,
+    });
+  }
+  // Log segmented palette data presence
+  if (metadata.SegmentedRedPaletteColorLookupTableData) {
+    console.log('[MADO Prefetch] ✅ Found segmented palette color data:', {
+      redSegmentedLength: metadata.SegmentedRedPaletteColorLookupTableData?.length,
+      greenSegmentedLength: metadata.SegmentedGreenPaletteColorLookupTableData?.length,
+      blueSegmentedLength: metadata.SegmentedBluePaletteColorLookupTableData?.length,
+    });
+  }
 
   // Diagnostic logging for empty mappings
   if (!metadata.Rows && !metadata.Columns && !metadata.PixelSpacing) {
@@ -331,6 +493,16 @@ function parseImplicitVrLittleEndianForCommonTags(arrayBuffer: ArrayBuffer): Ext
       return s.trim();
     };
 
+    const readWords = (start: number, length: number) => {
+      // length is in bytes
+      const numWords = Math.floor(length / 2);
+      const words = new Uint16Array(numWords);
+      for (let i = 0; i < numWords; i++) {
+        words[i] = dv.getUint16(start + i * 2, littleEndian);
+      }
+      return Array.from(words);
+    };
+
     const toNumberArray = (raw: string | undefined) => {
       if (!raw) return undefined;
       const parts = raw.split('\\').map(p => p.trim()).filter(p => p !== '');
@@ -443,16 +615,73 @@ function parseImplicitVrLittleEndianForCommonTags(arrayBuffer: ArrayBuffer): Ext
         case '00200052': // FrameOfReferenceUID
           metadata.FrameOfReferenceUID = raw;
           break;
+        case '00281101': // RedPaletteColorLookupTableDescriptor
+          metadata.RedPaletteColorLookupTableDescriptor = readWords(offset, valueLength);
+          break;
+        case '00281102': // GreenPaletteColorLookupTableDescriptor
+          metadata.GreenPaletteColorLookupTableDescriptor = readWords(offset, valueLength);
+          break;
+        case '00281103': // BluePaletteColorLookupTableDescriptor
+          metadata.BluePaletteColorLookupTableDescriptor = readWords(offset, valueLength);
+          break;
+        case '00281201': // RedPaletteColorLookupTableData
+          metadata.RedPaletteColorLookupTableData = readWords(offset, valueLength);
+          break;
+        case '00281202': // GreenPaletteColorLookupTableData
+          metadata.GreenPaletteColorLookupTableData = readWords(offset, valueLength);
+          break;
+        case '00281203': // BluePaletteColorLookupTableData
+          metadata.BluePaletteColorLookupTableData = readWords(offset, valueLength);
+          console.log('[MADO Prefetch] Extracted BluePaletteColorLookupTableData:', metadata.BluePaletteColorLookupTableData?.slice(0, 10), '...');
+          break;
+        case '00281221': // SegmentedRedPaletteColorLookupTableData
+          metadata.SegmentedRedPaletteColorLookupTableData = readWords(offset, valueLength);
+          console.log('[MADO Prefetch] Extracted SegmentedRedPaletteColorLookupTableData:', metadata.SegmentedRedPaletteColorLookupTableData?.slice(0, 10), '...');
+          break;
+        case '00281222': // SegmentedGreenPaletteColorLookupTableData
+          metadata.SegmentedGreenPaletteColorLookupTableData = readWords(offset, valueLength);
+          console.log('[MADO Prefetch] Extracted SegmentedGreenPaletteColorLookupTableData:', metadata.SegmentedGreenPaletteColorLookupTableData?.slice(0, 10), '...');
+          break;
+        case '00281223': // SegmentedBluePaletteColorLookupTableData
+          metadata.SegmentedBluePaletteColorLookupTableData = readWords(offset, valueLength);
+          console.log('[MADO Prefetch] Extracted SegmentedBluePaletteColorLookupTableData:', metadata.SegmentedBluePaletteColorLookupTableData?.slice(0, 10), '...');
+          break;
+        case '00281199': // PaletteColorLookupTableUID
+          metadata.PaletteColorLookupTableUID = raw;
+          console.log('[MADO Prefetch] Extracted PaletteColorLookupTableUID:', raw);
+          break;
         default:
         // ignore
       }
 
       offset += valueLength;
 
-      // Quick exit if we have essential fields
-      if (metadata.Rows && metadata.Columns && metadata.PixelSpacing) {
-        return metadata as ExtractedSeriesMetadata;
-      }
+      // NOTE: Previously there was an early exit here when Rows/Columns/PixelSpacing were found.
+      // This was REMOVED because it prevented parsing palette color data (tags 0028,11xx and 0028,12xx)
+      // which come AFTER the basic pixel module tags. We now parse the entire file to capture all metadata.
+    }
+
+    // Log if we found palette data
+    if (metadata.RedPaletteColorLookupTableDescriptor) {
+      console.log('[MADO Prefetch] ✅ Found palette color descriptors:', {
+        red: metadata.RedPaletteColorLookupTableDescriptor,
+        green: metadata.GreenPaletteColorLookupTableDescriptor,
+        blue: metadata.BluePaletteColorLookupTableDescriptor,
+        dataLengths: {
+          red: metadata.RedPaletteColorLookupTableData?.length,
+          green: metadata.GreenPaletteColorLookupTableData?.length,
+          blue: metadata.BluePaletteColorLookupTableData?.length,
+        },
+        uid: metadata.PaletteColorLookupTableUID,
+      });
+    }
+    // Log segmented palette data presence
+    if (metadata.SegmentedRedPaletteColorLookupTableData) {
+      console.log('[MADO Prefetch] ✅ Found segmented palette color data:', {
+        redSegmentedLength: metadata.SegmentedRedPaletteColorLookupTableData?.length,
+        greenSegmentedLength: metadata.SegmentedGreenPaletteColorLookupTableData?.length,
+        blueSegmentedLength: metadata.SegmentedBluePaletteColorLookupTableData?.length,
+      });
     }
 
     const keys = Object.keys(metadata);
@@ -909,6 +1138,15 @@ export function applyExtractedMetadataToSeries(
     if (extractedMeta.RescaleType !== undefined) instance.RescaleType = extractedMeta.RescaleType;
     if (extractedMeta.FrameOfReferenceUID !== undefined) instance.FrameOfReferenceUID = extractedMeta.FrameOfReferenceUID;
     if (extractedMeta.TransferSyntaxUID !== undefined) instance.TransferSyntaxUID = extractedMeta.TransferSyntaxUID;
+
+    // Palette Color Lookup Table
+    if (extractedMeta.RedPaletteColorLookupTableDescriptor !== undefined) instance.RedPaletteColorLookupTableDescriptor = extractedMeta.RedPaletteColorLookupTableDescriptor;
+    if (extractedMeta.GreenPaletteColorLookupTableDescriptor !== undefined) instance.GreenPaletteColorLookupTableDescriptor = extractedMeta.GreenPaletteColorLookupTableDescriptor;
+    if (extractedMeta.BluePaletteColorLookupTableDescriptor !== undefined) instance.BluePaletteColorLookupTableDescriptor = extractedMeta.BluePaletteColorLookupTableDescriptor;
+    if (extractedMeta.RedPaletteColorLookupTableData !== undefined) instance.RedPaletteColorLookupTableData = extractedMeta.RedPaletteColorLookupTableData;
+    if (extractedMeta.GreenPaletteColorLookupTableData !== undefined) instance.GreenPaletteColorLookupTableData = extractedMeta.GreenPaletteColorLookupTableData;
+    if (extractedMeta.BluePaletteColorLookupTableData !== undefined) instance.BluePaletteColorLookupTableData = extractedMeta.BluePaletteColorLookupTableData;
+    if (extractedMeta.PaletteColorLookupTableUID !== undefined) instance.PaletteColorLookupTableUID = extractedMeta.PaletteColorLookupTableUID;
 
     // Calculate ImagePositionPatient for each slice based on index
     // Assumes slices are ordered and equally spaced along the slice normal

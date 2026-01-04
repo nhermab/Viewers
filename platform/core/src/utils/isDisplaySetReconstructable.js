@@ -24,8 +24,42 @@ export default function isDisplaySetReconstructable(instances, appConfig) {
   );
 
   if (hasMadoSynthesizedData) {
-    // Check if the geometry has been patched (i.e., real geometry is available)
-    const hasRealGeometry = instances.every(instance => !instance._isSynthesized || instance._geometryPatched);
+    // Check if the geometry has been patched OR if actual geometry fields are present
+    // This allows reconstruction when geometry was derived during prefetch
+    const hasRealGeometry = instances.every(instance => {
+      // If not synthesized, it's real
+      if (!instance._isSynthesized && !instance._synthesizedFromMado) {
+        return true;
+      }
+      // If explicitly marked as patched, it's real
+      if (instance._geometryPatched) {
+        return true;
+      }
+      // Check if actual geometry fields are present and valid
+      return (
+        instance.Rows && instance.Columns &&
+        Array.isArray(instance.ImagePositionPatient) && instance.ImagePositionPatient.length === 3 &&
+        Array.isArray(instance.ImageOrientationPatient) && instance.ImageOrientationPatient.length === 6 &&
+        (Array.isArray(instance.PixelSpacing) && instance.PixelSpacing.length === 2)
+      );
+    });
+
+    // Debug logging for MADO reconstructability
+    console.log('🔍 MADO Reconstructability Check:', {
+      instanceCount: instances.length,
+      hasMadoSynthesizedData,
+      hasRealGeometry,
+      instanceFlags: instances.slice(0, 3).map(inst => ({
+        _isSynthesized: inst._isSynthesized,
+        _synthesizedFromMado: inst._synthesizedFromMado,
+        _geometryPatched: inst._geometryPatched,
+        hasIPP: Array.isArray(inst.ImagePositionPatient) && inst.ImagePositionPatient.length === 3,
+        hasIOP: Array.isArray(inst.ImageOrientationPatient) && inst.ImageOrientationPatient.length === 6,
+        hasRows: !!inst.Rows,
+        hasCols: !!inst.Columns,
+        hasPixelSpacing: Array.isArray(inst.PixelSpacing) && inst.PixelSpacing.length === 2,
+      })),
+    });
 
     if (!hasRealGeometry) {
       console.log(
@@ -34,7 +68,7 @@ export default function isDisplaySetReconstructable(instances, appConfig) {
       return { value: false, _madoPending: true };
     }
 
-    console.log('📋 MADO data with patched geometry - proceeding with validation');
+    console.log('📋 MADO data with valid geometry - proceeding with validation');
   }
 
   const isMultiframe = firstInstance.NumberOfFrames > 1;
@@ -57,6 +91,16 @@ export default function isDisplaySetReconstructable(instances, appConfig) {
 
   // Can't reconstruct if all instances don't have the ImagePositionPatient.
   if (!isMultiframe && !instances.every(instance => instance.ImagePositionPatient)) {
+    const missingIPP = instances.filter(inst => !inst.ImagePositionPatient);
+    console.log('❌ Missing ImagePositionPatient:', {
+      missingCount: missingIPP.length,
+      totalInstances: instances.length,
+      sampleMissing: missingIPP.slice(0, 3).map(inst => ({
+        SOPInstanceUID: inst.SOPInstanceUID?.substring(0, 20),
+        _geometryPatched: inst._geometryPatched,
+        _isSynthesized: inst._isSynthesized,
+      })),
+    });
     return { value: false };
   }
 
@@ -155,12 +199,30 @@ function processSingleframe(instances) {
 
     const imageOrientationPatient = toNumber(ImageOrientationPatient);
 
+    const sameOrientation = _isSameOrientation(imageOrientationPatient, firstImageOrientationPatient);
+
     if (
       Rows !== firstImageRows ||
       Columns !== firstImageColumns ||
       SamplesPerPixel !== firstImageSamplesPerPixel ||
-      !_isSameOrientation(imageOrientationPatient, firstImageOrientationPatient)
+      !sameOrientation
     ) {
+      console.log('❌ Dimension/orientation mismatch at instance', i, {
+        rowsMatch: Rows === firstImageRows,
+        colsMatch: Columns === firstImageColumns,
+        sppMatch: SamplesPerPixel === firstImageSamplesPerPixel,
+        orientationMatch: sameOrientation,
+        instance: {
+          Rows, Columns, SamplesPerPixel,
+          hasIOP: !!ImageOrientationPatient,
+        },
+        firstImage: {
+          Rows: firstImageRows,
+          Columns: firstImageColumns,
+          SamplesPerPixel: firstImageSamplesPerPixel,
+          hasIOP: !!firstImageOrientationPatient,
+        },
+      });
       return { value: false };
     }
   }
@@ -213,8 +275,17 @@ function processSingleframe(instances) {
 }
 
 function _isSameOrientation(iop1, iop2) {
-  if (iop1 === undefined || iop2 === undefined) {
-    return;
+  // If both are undefined/null, they're the same (both missing)
+  if ((iop1 === undefined || iop1 === null) && (iop2 === undefined || iop2 === null)) {
+    return true;
+  }
+  // If only one is undefined, they're different
+  if (iop1 === undefined || iop1 === null || iop2 === undefined || iop2 === null) {
+    return false;
+  }
+  // If either is not an array with 6 elements, they're not valid orientations
+  if (!Array.isArray(iop1) || iop1.length < 6 || !Array.isArray(iop2) || iop2.length < 6) {
+    return false;
   }
 
   return (

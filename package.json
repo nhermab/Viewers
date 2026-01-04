@@ -79,6 +79,7 @@
     "link-list": "npm ls --depth=0 --link=true"
   },
   "dependencies": {
+    "cornerstone-wado-image-loader": "^4.13.2",
     "execa": "8.0.1"
   },
   "optionalDependencies": {

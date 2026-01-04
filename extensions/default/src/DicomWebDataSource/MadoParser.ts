@@ -19,17 +19,91 @@ export interface MadoInstance {
   SamplesPerPixel?: number;
   PhotometricInterpretation?: string;
   PlanarConfiguration?: number;
+  PixelAspectRatio?: number;
+  SmallestPixelValue?: number;
+  LargestPixelValue?: number;
+
+  // Image plane fields
   pixelSpacing?: number[];
+  PixelSpacing?: number[];
+  ImagerPixelSpacing?: number[];
+  imagerPixelSpacing?: number[];
   imageOrientationPatient?: number[];
+  ImageOrientationPatient?: number[];
   imagePositionPatient?: number[];
+  ImagePositionPatient?: number[];
   sliceThickness?: number;
+  SliceThickness?: number;
+  SliceLocation?: number;
+  sliceLocation?: number;
+  SpacingBetweenSlices?: number;
+
+  // VOI LUT fields
   WindowCenter?: number | number[];
   WindowWidth?: number | number[];
   RescaleIntercept?: number;
   RescaleSlope?: number;
   RescaleType?: string;
+  VOILUTFunction?: string;
+
+  // Frame of reference
   FrameOfReferenceUID?: string;
   TransferSyntaxUID?: string;
+
+  // Multi-frame support
+  NumberOfFrames?: number;
+  FrameTime?: number;
+  FrameIncrementPointer?: string;
+  PerFrameFunctionalGroupsSequence?: any[];
+  SharedFunctionalGroupsSequence?: any[];
+
+  // Image identification
+  ImageType?: string[];
+  AcquisitionNumber?: number;
+  AcquisitionDate?: string;
+  AcquisitionTime?: string;
+
+  // Lossy compression info
+  LossyImageCompression?: string;
+  LossyImageCompressionRatio?: number;
+  LossyImageCompressionMethod?: string;
+
+  // Palette Color Lookup Table fields
+  RedPaletteColorLookupTableDescriptor?: number[];
+  GreenPaletteColorLookupTableDescriptor?: number[];
+  BluePaletteColorLookupTableDescriptor?: number[];
+  RedPaletteColorLookupTableData?: number[];
+  GreenPaletteColorLookupTableData?: number[];
+  BluePaletteColorLookupTableData?: number[];
+  PaletteColorLookupTableUID?: string;
+  // camelCase aliases for compatibility
+  redPaletteColorLookupTableDescriptor?: number[];
+  greenPaletteColorLookupTableDescriptor?: number[];
+  bluePaletteColorLookupTableDescriptor?: number[];
+  redPaletteColorLookupTableData?: number[];
+  greenPaletteColorLookupTableData?: number[];
+  bluePaletteColorLookupTableData?: number[];
+  paletteColorLookupTableUID?: string;
+
+  // Segmented Palette Color Lookup Table (0028,1221-1223)
+  SegmentedRedPaletteColorLookupTableData?: number[];
+  SegmentedGreenPaletteColorLookupTableData?: number[];
+  SegmentedBluePaletteColorLookupTableData?: number[];
+  // camelCase aliases
+  segmentedRedPaletteColorLookupTableData?: number[];
+  segmentedGreenPaletteColorLookupTableData?: number[];
+  segmentedBluePaletteColorLookupTableData?: number[];
+
+  // Ultrasound calibration
+  SequenceOfUltrasoundRegions?: any[];
+
+  // PET specific fields
+  CorrectedImage?: string[];
+  Units?: string;
+  DecayCorrection?: string;
+  FrameReferenceTime?: number;
+  ActualFrameDuration?: number;
+  RadiopharmaceuticalInformationSequence?: any[];
 
   // Internal flags
   _prefetchedMetadata?: boolean;
@@ -45,14 +119,29 @@ export interface MadoDisplaySet {
   modality?: string;
   numberOfSeriesRelatedInstances?: number;
   instances: MadoInstance[];
+
+  // Patient Module
   patientID?: string;
   patientName?: string;
   patientBirthDate?: string;
   patientSex?: string;
+
+  // Patient Study Module
+  patientAge?: string;
+  patientSize?: number;
+  patientWeight?: number;
+
+  // Study Module
   studyDescription?: string;
   studyDate?: string;
   studyTime?: string;
   accessionNumber?: string;
+  studyID?: string;
+
+  // Frame of Reference
+  frameOfReferenceUID?: string;
+
+  // WADO retrieval
   retrieveURL?: string;
 }
 
@@ -84,6 +173,12 @@ class MadoParser {
     const studyTime = dataset['00080030']?.Value?.[0];
     const studyDescription = dataset['00081030']?.Value?.[0];
     const accessionNumber = dataset['00080050']?.Value?.[0];
+
+    // Additional study/patient fields that might be present in MADO
+    const studyID = dataset['00200010']?.Value?.[0]; // Study ID
+    const patientAge = dataset['00101010']?.Value?.[0]; // Patient Age
+    const patientSize = dataset['00101020']?.Value?.[0]; // Patient Size (height)
+    const patientWeight = dataset['00101030']?.Value?.[0]; // Patient Weight
 
     if (!studyInstanceUID) {
       throw new Error('MADO file is missing required StudyInstanceUID (0020,000D)');
@@ -277,10 +372,14 @@ class MadoParser {
             patientName,
             patientBirthDate,
             patientSex,
+            patientAge,
+            patientSize: patientSize ? parseFloat(patientSize) : undefined,
+            patientWeight: patientWeight ? parseFloat(patientWeight) : undefined,
             studyDescription,
             studyDate,
             studyTime,
             accessionNumber,
+            studyID,
             retrieveURL,
           });
 

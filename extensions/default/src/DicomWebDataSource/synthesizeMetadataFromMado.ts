@@ -123,6 +123,15 @@ const SOP_PHYSICS_DEFAULTS: Record<string, any> = {
     Modality: 'DOC',
     _isDocument: true,
   },
+  [SOP_CLASSES.SECONDARY_CAPTURE]: {
+    Modality: 'OT',
+    BitsAllocated: 8,
+    BitsStored: 8,
+    HighBit: 7,
+    PixelRepresentation: 0,
+    // Don't set SamplesPerPixel or PhotometricInterpretation
+    // to allow inference from actual DICOM values
+  },
 };
 
 // Map Enhanced / Retired aliases
@@ -158,6 +167,8 @@ const MODALITY_PHYSICS: Record<string, any> = {
     SamplesPerPixel: 3,
     PhotometricInterpretation: 'YBR_FULL_422',
     BitsAllocated: 8,
+    BitsStored: 8,
+    HighBit: 7,
   },
   XA: { BitsAllocated: 8, BitsStored: 8, HighBit: 7 },
   // Slide microscopy / whole slide imaging
@@ -165,6 +176,15 @@ const MODALITY_PHYSICS: Record<string, any> = {
     SamplesPerPixel: 3,
     PhotometricInterpretation: 'YBR_FULL',
     PlanarConfiguration: 0,
+  },
+  // OT (Other) - often used for color secondary capture, ultrasound, etc.
+  OT: {
+    BitsAllocated: 8,
+    BitsStored: 8,
+    HighBit: 7,
+    PixelRepresentation: 0,
+    // Don't set SamplesPerPixel or PhotometricInterpretation here
+    // as OT can be grayscale or color - let inference handle it
   },
 };
 
@@ -208,6 +228,10 @@ function patchTechnicalAttributes(metadata: any, instance: any) {
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function synthesizeSeriesMetadata(displaySet: MadoDisplaySet): any {
+  // Try to get SliceThickness from first instance if available
+  const firstInstance = displaySet.instances?.[0] as any;
+  const sliceThickness = firstInstance?.SliceThickness || firstInstance?.sliceThickness;
+
   return {
     StudyInstanceUID: displaySet.studyInstanceUID,
     SeriesInstanceUID: displaySet.seriesInstanceUID,
@@ -218,14 +242,28 @@ export function synthesizeSeriesMetadata(displaySet: MadoDisplaySet): any {
     Modality: displaySet.modality || 'OT',
     NumberOfSeriesRelatedInstances:
       displaySet.numberOfSeriesRelatedInstances || displaySet.instances?.length || 1,
+
+    // SliceThickness from first instance (important for 3D reconstruction)
+    SliceThickness: sliceThickness,
+
+    // Patient Module
     PatientName: displaySet.patientName || 'Anonymous',
     PatientID: displaySet.patientID || 'UNKNOWN',
     PatientBirthDate: displaySet.patientBirthDate || '',
     PatientSex: displaySet.patientSex || 'O',
+
+    // Patient Study Module (if available from displaySet or first instance)
+    PatientAge: (displaySet as any).patientAge || firstInstance?.PatientAge,
+    PatientSize: (displaySet as any).patientSize || firstInstance?.PatientSize,
+    PatientWeight: (displaySet as any).patientWeight || firstInstance?.PatientWeight,
+
+    // Study Module
     StudyDescription: displaySet.studyDescription || '',
     StudyDate: displaySet.studyDate || '',
     StudyTime: displaySet.studyTime || '',
     AccessionNumber: displaySet.accessionNumber || '',
+    StudyID: (displaySet as any).studyID || '',
+
     _isSynthesized: true,
   };
 }
@@ -266,12 +304,45 @@ export function synthesizeInstanceMetadata(
 
   // --- PIXEL MODULE WITH PREFETCH PRIORITY ---
   // Priority: prefetched > instance explicit > modality defaults > generic defaults
-  let samplesPerPixel = (instance as any).SamplesPerPixel || modalityPhysics.SamplesPerPixel || 1;
+  let samplesPerPixel = (instance as any).SamplesPerPixel || modalityPhysics.SamplesPerPixel;
   let photometricInterpretation = (instance as any).PhotometricInterpretation || modalityPhysics.PhotometricInterpretation || 'MONOCHROME2';
-  let bitsAllocated = (instance as any).BitsAllocated || modalityPhysics.BitsAllocated || 16;
-  let bitsStored = (instance as any).BitsStored || modalityPhysics.BitsStored || 16;
-  let highBit = (instance as any).HighBit || modalityPhysics.HighBit || 15;
+  let bitsAllocated = (instance as any).BitsAllocated || modalityPhysics.BitsAllocated;
+  let bitsStored = (instance as any).BitsStored || modalityPhysics.BitsStored;
+  let highBit = (instance as any).HighBit || modalityPhysics.HighBit;
   let pixelRepresentation = (instance as any).PixelRepresentation ?? modalityPhysics.PixelRepresentation ?? 0;
+
+  // Infer SamplesPerPixel from PhotometricInterpretation if not explicitly set
+  const piStr = String(photometricInterpretation).toUpperCase();
+  const isColorImage = piStr.startsWith('RGB') || piStr.startsWith('YBR');
+
+  if (samplesPerPixel === undefined) {
+    if (isColorImage) {
+      samplesPerPixel = 3;
+      console.log('[MADO Synthesis] Inferred SamplesPerPixel=3 from PhotometricInterpretation:', photometricInterpretation);
+    } else if (piStr === 'PALETTE COLOR') {
+      samplesPerPixel = 1;
+    } else {
+      samplesPerPixel = 1; // Default for MONOCHROME
+    }
+  }
+
+  // Infer bit depth from PhotometricInterpretation if not set
+  // Color images (RGB/YBR) are typically 8-bit per component
+  if (bitsAllocated === undefined && isColorImage) {
+    bitsAllocated = 8;
+    console.log('[MADO Synthesis] Inferred BitsAllocated=8 for color image');
+  }
+  if (bitsStored === undefined && isColorImage) {
+    bitsStored = 8;
+  }
+  if (highBit === undefined && isColorImage) {
+    highBit = 7;
+  }
+
+  // Final fallbacks for grayscale
+  if (bitsAllocated === undefined) bitsAllocated = 16;
+  if (bitsStored === undefined) bitsStored = 16;
+  if (highBit === undefined) highBit = 15;
 
   // Check for explicit palette descriptors / UID on the instance. If present,
   // prefer PALETTE COLOR when SamplesPerPixel === 1.
@@ -280,6 +351,16 @@ export function synthesizeInstanceMetadata(
     (instance as any).GreenPaletteColorLookupTableDescriptor ||
     (instance as any).BluePaletteColorLookupTableDescriptor ||
     (instance as any).PaletteColorLookupTableUID;
+
+  // Log palette detection
+  if (hasPaletteDescriptors) {
+    console.log('[MADO Synthesis] Palette descriptors detected on instance:', {
+      sopInstanceUID: (instance as any).sopInstanceUID?.substring(0, 20) + '...',
+      currentPhotometric: photometricInterpretation,
+      samplesPerPixel,
+      hasPaletteDescriptors: true,
+    });
+  }
 
   // Conservative photometric derivation:
   // - If PhotometricInterpretation explicitly present, respect it.
@@ -290,9 +371,14 @@ export function synthesizeInstanceMetadata(
       photometricInterpretation = 'RGB';
     } else if (samplesPerPixel === 1 && hasPaletteDescriptors) {
       photometricInterpretation = 'PALETTE COLOR';
+      console.log('[MADO Synthesis] ✅ Setting PhotometricInterpretation to PALETTE COLOR based on descriptors');
     } else {
       photometricInterpretation = modalityPhysics.PhotometricInterpretation || 'MONOCHROME2';
     }
+  } else if (hasPaletteDescriptors && String((instance as any).PhotometricInterpretation).toUpperCase() !== 'PALETTE COLOR') {
+    // If we have palette descriptors but PhotometricInterpretation is set to something else,
+    // log a warning since this might be a data inconsistency
+    console.warn('[MADO Synthesis] ⚠️ Instance has palette descriptors but PhotometricInterpretation is:', (instance as any).PhotometricInterpretation);
   }
 
   // Window/Level from prefetched or modality defaults
@@ -361,6 +447,84 @@ export function synthesizeInstanceMetadata(
     RescaleSlope: rescaleSlope,
     RescaleType: rescaleType,
 
+    // Palette Color Lookup Table
+    RedPaletteColorLookupTableDescriptor: (instance as any).RedPaletteColorLookupTableDescriptor || (instance as any).redPaletteColorLookupTableDescriptor,
+    GreenPaletteColorLookupTableDescriptor: (instance as any).GreenPaletteColorLookupTableDescriptor || (instance as any).greenPaletteColorLookupTableDescriptor,
+    BluePaletteColorLookupTableDescriptor: (instance as any).BluePaletteColorLookupTableDescriptor || (instance as any).bluePaletteColorLookupTableDescriptor,
+    RedPaletteColorLookupTableData: (instance as any).RedPaletteColorLookupTableData || (instance as any).redPaletteColorLookupTableData,
+    GreenPaletteColorLookupTableData: (instance as any).GreenPaletteColorLookupTableData || (instance as any).greenPaletteColorLookupTableData,
+    BluePaletteColorLookupTableData: (instance as any).BluePaletteColorLookupTableData || (instance as any).bluePaletteColorLookupTableData,
+    PaletteColorLookupTableUID: (instance as any).PaletteColorLookupTableUID || (instance as any).paletteColorLookupTableUID,
+
+    // Segmented Palette Color Lookup Table (0028,1221-1223)
+    SegmentedRedPaletteColorLookupTableData: (instance as any).SegmentedRedPaletteColorLookupTableData || (instance as any).segmentedRedPaletteColorLookupTableData,
+    SegmentedGreenPaletteColorLookupTableData: (instance as any).SegmentedGreenPaletteColorLookupTableData || (instance as any).segmentedGreenPaletteColorLookupTableData,
+    SegmentedBluePaletteColorLookupTableData: (instance as any).SegmentedBluePaletteColorLookupTableData || (instance as any).segmentedBluePaletteColorLookupTableData,
+
+    // NEW: Additional fields for DICOM-JSON parity
+
+    // Pixel module extras
+    PlanarConfiguration: (instance as any).PlanarConfiguration,
+    PixelAspectRatio: (instance as any).PixelAspectRatio,
+    SmallestPixelValue: (instance as any).SmallestPixelValue,
+    LargestPixelValue: (instance as any).LargestPixelValue,
+
+    // Image plane extras
+    ImagerPixelSpacing: (instance as any).ImagerPixelSpacing || (instance as any).imagerPixelSpacing,
+    SliceLocation: (instance as any).SliceLocation || (instance as any).sliceLocation,
+    SpacingBetweenSlices: (instance as any).SpacingBetweenSlices,
+
+    // VOI LUT extras
+    VOILUTFunction: (instance as any).VOILUTFunction,
+
+    // Multi-frame extras
+    NumberOfFrames: (instance as any).NumberOfFrames || (instance as any).numberOfFrames,
+    FrameTime: (instance as any).FrameTime,
+    FrameIncrementPointer: (instance as any).FrameIncrementPointer,
+    PerFrameFunctionalGroupsSequence: (instance as any).PerFrameFunctionalGroupsSequence,
+    SharedFunctionalGroupsSequence: (instance as any).SharedFunctionalGroupsSequence,
+
+    // Image identification
+    ImageType: (instance as any).ImageType,
+    AcquisitionNumber: (instance as any).AcquisitionNumber,
+    AcquisitionDate: (instance as any).AcquisitionDate,
+    AcquisitionTime: (instance as any).AcquisitionTime,
+
+    // Lossy compression info
+    LossyImageCompression: (instance as any).LossyImageCompression,
+    LossyImageCompressionRatio: (instance as any).LossyImageCompressionRatio,
+    LossyImageCompressionMethod: (instance as any).LossyImageCompressionMethod,
+
+    // Ultrasound calibration sequence
+    SequenceOfUltrasoundRegions: (instance as any).SequenceOfUltrasoundRegions,
+
+    // PET specific fields
+    CorrectedImage: (instance as any).CorrectedImage,
+    Units: (instance as any).Units,
+    DecayCorrection: (instance as any).DecayCorrection,
+    FrameReferenceTime: (instance as any).FrameReferenceTime,
+    ActualFrameDuration: (instance as any).ActualFrameDuration,
+    RadiopharmaceuticalInformationSequence: (instance as any).RadiopharmaceuticalInformationSequence,
+
+    // Study-level fields (carried from displaySet for completeness)
+    StudyDescription: (displaySet as any).studyDescription,
+    StudyDate: (displaySet as any).studyDate,
+    StudyTime: (displaySet as any).studyTime,
+    AccessionNumber: (displaySet as any).accessionNumber,
+    StudyID: (displaySet as any).studyID || '',
+
+    // Series-level fields
+    SeriesDescription: (displaySet as any).seriesDescription,
+    SeriesDate: (displaySet as any).seriesDate,
+    SeriesTime: (displaySet as any).seriesTime,
+
+    // Patient study module fields
+    PatientAge: (displaySet as any).patientAge,
+    PatientSize: (displaySet as any).patientSize,
+    PatientWeight: (displaySet as any).patientWeight,
+    PatientSex: (displaySet as any).patientSex,
+    PatientBirthDate: (displaySet as any).patientBirthDate,
+
     // Internal OHIF fields (underscore prefix to mark as non-DICOM)
     _wadoRoot: context.wadoRoot,
     _wadoUri: context.wadoUri,
@@ -370,6 +534,89 @@ export function synthesizeInstanceMetadata(
     _synthesizedFromMado: true,
     _hasPrefetchedMetadata: hasPrefetchedMetadata,
   };
+
+  // Compute _geometryPatched based on whether we have valid geometry in the synthesized metadata
+  // This is crucial for allowing 3D reconstruction
+  const synthesizedIPP = metadata.ImagePositionPatient;
+  const synthesizedIOP = metadata.ImageOrientationPatient;
+  const synthesizedPixelSpacing = metadata.PixelSpacing;
+  const hasValidSynthesizedGeometry =
+    metadata.Rows && metadata.Columns &&
+    Array.isArray(synthesizedIPP) && synthesizedIPP.length === 3 &&
+    Array.isArray(synthesizedIOP) && synthesizedIOP.length === 6 &&
+    Array.isArray(synthesizedPixelSpacing) && synthesizedPixelSpacing.length === 2 &&
+    // Ensure IPP has non-default values (not all zeros unless it's the first slice at origin)
+    (hasPrefetchedMetadata || (instance as any)._geometryPatched ||
+     (synthesizedIPP[0] !== 0 || synthesizedIPP[1] !== 0 || synthesizedIPP[2] !== 0 || context.index === 0));
+
+  metadata._geometryPatched = (instance as any)._geometryPatched || hasValidSynthesizedGeometry;
+
+  // --- Conditional sequences for special modalities (SR, RT, SEG, etc.) ---
+  // These are passed through if they exist on the instance
+
+  // Structured Report sequences
+  if ((instance as any).ConceptNameCodeSequence) {
+    metadata.ConceptNameCodeSequence = (instance as any).ConceptNameCodeSequence;
+  }
+  if ((instance as any).ContentSequence) {
+    metadata.ContentSequence = (instance as any).ContentSequence;
+  }
+  if ((instance as any).ContentTemplateSequence) {
+    metadata.ContentTemplateSequence = (instance as any).ContentTemplateSequence;
+  }
+  if ((instance as any).CurrentRequestedProcedureEvidenceSequence) {
+    metadata.CurrentRequestedProcedureEvidenceSequence = (instance as any).CurrentRequestedProcedureEvidenceSequence;
+  }
+  if ((instance as any).CodingSchemeIdentificationSequence) {
+    metadata.CodingSchemeIdentificationSequence = (instance as any).CodingSchemeIdentificationSequence;
+  }
+
+  // RT Structure Set sequences
+  if ((instance as any).ROIContourSequence) {
+    metadata.ROIContourSequence = (instance as any).ROIContourSequence;
+  }
+  if ((instance as any).StructureSetROISequence) {
+    metadata.StructureSetROISequence = (instance as any).StructureSetROISequence;
+  }
+  if ((instance as any).ReferencedFrameOfReferenceSequence) {
+    metadata.ReferencedFrameOfReferenceSequence = (instance as any).ReferencedFrameOfReferenceSequence;
+  }
+
+  // Referenced series/instance sequences
+  if ((instance as any).ReferencedSeriesSequence) {
+    metadata.ReferencedSeriesSequence = (instance as any).ReferencedSeriesSequence;
+  }
+
+  // Encapsulated document (PDF, etc.)
+  if ((instance as any).EncapsulatedDocument) {
+    metadata.EncapsulatedDocument = (instance as any).EncapsulatedDocument;
+  }
+  if ((instance as any).MIMETypeOfEncapsulatedDocument) {
+    metadata.MIMETypeOfEncapsulatedDocument = (instance as any).MIMETypeOfEncapsulatedDocument;
+  }
+
+  // Debug log palette color data
+  if (metadata.RedPaletteColorLookupTableDescriptor || metadata.PaletteColorLookupTableUID || metadata.SegmentedRedPaletteColorLookupTableData) {
+    console.log('[MADO Synthesis] ✅ Instance has palette color data:', {
+      sopInstanceUID: (instance as any).sopInstanceUID?.substring(0, 20) + '...',
+      photometricInterpretation: metadata.PhotometricInterpretation,
+      redDescriptor: metadata.RedPaletteColorLookupTableDescriptor,
+      greenDescriptor: metadata.GreenPaletteColorLookupTableDescriptor,
+      blueDescriptor: metadata.BluePaletteColorLookupTableDescriptor,
+      redDataLength: metadata.RedPaletteColorLookupTableData?.length,
+      greenDataLength: metadata.GreenPaletteColorLookupTableData?.length,
+      blueDataLength: metadata.BluePaletteColorLookupTableData?.length,
+      segmentedRedLength: metadata.SegmentedRedPaletteColorLookupTableData?.length,
+      segmentedGreenLength: metadata.SegmentedGreenPaletteColorLookupTableData?.length,
+      segmentedBlueLength: metadata.SegmentedBluePaletteColorLookupTableData?.length,
+      uid: metadata.PaletteColorLookupTableUID,
+    });
+  } else if (photometricInterpretation === 'PALETTE COLOR') {
+    console.warn('[MADO Synthesis] ⚠️ PhotometricInterpretation is PALETTE COLOR but no palette data found on instance!', {
+      sopInstanceUID: (instance as any).sopInstanceUID?.substring(0, 20) + '...',
+      instanceKeys: Object.keys(instance as any).filter(k => k.toLowerCase().includes('palette')),
+    });
+  }
 
   // --- Force color metadata for color MR images ---
   const instAny = instance as any;

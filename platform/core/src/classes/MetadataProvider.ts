@@ -205,61 +205,97 @@ class MetadataProvider {
         // Determine whether this instance should be treated as a PALETTE COLOR image.
         // Only attempt to fetch palette lookup tables when PhotometricInterpretation explicitly
         // indicates 'PALETTE COLOR' or when SamplesPerPixel === 1 and palette descriptors/UIDs exist.
+        const hasSegmentedPaletteData =
+          instance.SegmentedRedPaletteColorLookupTableData ||
+          instance.SegmentedGreenPaletteColorLookupTableData ||
+          instance.SegmentedBluePaletteColorLookupTableData ||
+          instance.segmentedRedPaletteColorLookupTableData ||
+          instance.segmentedGreenPaletteColorLookupTableData ||
+          instance.segmentedBluePaletteColorLookupTableData;
+
         const hasPaletteDescriptors =
           instance.RedPaletteColorLookupTableDescriptor ||
           instance.GreenPaletteColorLookupTableDescriptor ||
           instance.BluePaletteColorLookupTableDescriptor ||
-          instance.PaletteColorLookupTableUID;
+          instance.PaletteColorLookupTableUID ||
+          hasSegmentedPaletteData;
 
         const isPaletteColor =
           (photometricInterpretation &&
             String(photometricInterpretation).toUpperCase() === 'PALETTE COLOR') ||
           (samplesPerPixel === 1 && !!hasPaletteDescriptors);
 
+        // Debug logging for palette color detection
+        if (isPaletteColor || hasPaletteDescriptors) {
+          const debugImageId = instance._imageId || instance.imageId || instance.SOPInstanceUID || instance.sopInstanceUID || '<unknown imageId>';
+          console.log('[MetadataProvider] Palette color detection:', {
+            imageId: debugImageId,
+            photometricInterpretation,
+            samplesPerPixel,
+            hasPaletteDescriptors: !!hasPaletteDescriptors,
+            hasSegmentedPaletteData: !!hasSegmentedPaletteData,
+            isPaletteColor,
+            redDescriptor: instance.RedPaletteColorLookupTableDescriptor,
+            greenDescriptor: instance.GreenPaletteColorLookupTableDescriptor,
+            blueDescriptor: instance.BluePaletteColorLookupTableDescriptor,
+            redDataLength: instance.RedPaletteColorLookupTableData?.length,
+            greenDataLength: instance.GreenPaletteColorLookupTableData?.length,
+            blueDataLength: instance.BluePaletteColorLookupTableData?.length,
+            segmentedRedLength: instance.SegmentedRedPaletteColorLookupTableData?.length || instance.segmentedRedPaletteColorLookupTableData?.length,
+            segmentedGreenLength: instance.SegmentedGreenPaletteColorLookupTableData?.length || instance.segmentedGreenPaletteColorLookupTableData?.length,
+            segmentedBlueLength: instance.SegmentedBluePaletteColorLookupTableData?.length || instance.segmentedBluePaletteColorLookupTableData?.length,
+            uid: instance.PaletteColorLookupTableUID,
+          });
+        }
+
         metadata = {
-          samplesPerPixel: samplesPerPixel !== undefined ? samplesPerPixel : 1,
+          samplesPerPixel: (samplesPerPixel !== undefined && !isNaN(samplesPerPixel)) ? samplesPerPixel : 1,
           photometricInterpretation: photometricInterpretation || 'MONOCHROME2',
           rows: toNumber(instance.Rows),
           columns: toNumber(instance.Columns),
-          bitsAllocated: bitsAllocated !== undefined ? bitsAllocated : 16,
-          bitsStored: bitsStored !== undefined ? bitsStored : 16,
-          highBit: highBit !== undefined ? highBit : 15,
+          bitsAllocated: (bitsAllocated !== undefined && !isNaN(bitsAllocated)) ? bitsAllocated : 16,
+          bitsStored: (bitsStored !== undefined && !isNaN(bitsStored)) ? bitsStored : 16,
+          highBit: (highBit !== undefined && !isNaN(highBit)) ? highBit : 15,
           pixelRepresentation: toNumber(instance.PixelRepresentation) ?? 0,
           planarConfiguration: toNumber(instance.PlanarConfiguration),
           pixelAspectRatio: toNumber(instance.PixelAspectRatio),
           smallestPixelValue: toNumber(instance.SmallestPixelValue),
           largestPixelValue: toNumber(instance.LargestPixelValue),
-          redPaletteColorLookupTableDescriptor: toNumber(
-            instance.RedPaletteColorLookupTableDescriptor
-          ),
-          greenPaletteColorLookupTableDescriptor: toNumber(
-            instance.GreenPaletteColorLookupTableDescriptor
-          ),
-          bluePaletteColorLookupTableDescriptor: toNumber(
-            instance.BluePaletteColorLookupTableDescriptor
-          ),
-          redPaletteColorLookupTableData: isPaletteColor
-            ? fetchPaletteColorLookupTableData(
-                instance,
-                'RedPaletteColorLookupTableData',
-                'RedPaletteColorLookupTableDescriptor'
-              )
-            : undefined,
-          greenPaletteColorLookupTableData: isPaletteColor
-            ? fetchPaletteColorLookupTableData(
-                instance,
-                'GreenPaletteColorLookupTableData',
-                'GreenPaletteColorLookupTableDescriptor'
-              )
-            : undefined,
-          bluePaletteColorLookupTableData: isPaletteColor
-            ? fetchPaletteColorLookupTableData(
-                instance,
-                'BluePaletteColorLookupTableData',
-                'BluePaletteColorLookupTableDescriptor'
-              )
-            : undefined,
         };
+
+        // Only include palette lookup table fields if this is actually a PALETTE COLOR image
+        if (isPaletteColor) {
+          metadata.redPaletteColorLookupTableDescriptor = toNumber(
+            instance.RedPaletteColorLookupTableDescriptor
+          );
+          metadata.greenPaletteColorLookupTableDescriptor = toNumber(
+            instance.GreenPaletteColorLookupTableDescriptor
+          );
+          metadata.bluePaletteColorLookupTableDescriptor = toNumber(
+            instance.BluePaletteColorLookupTableDescriptor
+          );
+          metadata.redPaletteColorLookupTableData =
+            instance.RedPaletteColorLookupTableData ||
+            instance.redPaletteColorLookupTableData ||
+            instance.SegmentedRedPaletteColorLookupTableData ||
+            instance.segmentedRedPaletteColorLookupTableData;
+          metadata.greenPaletteColorLookupTableData =
+            instance.GreenPaletteColorLookupTableData ||
+            instance.greenPaletteColorLookupTableData ||
+            instance.SegmentedGreenPaletteColorLookupTableData ||
+            instance.segmentedGreenPaletteColorLookupTableData;
+          metadata.bluePaletteColorLookupTableData =
+            instance.BluePaletteColorLookupTableData ||
+            instance.bluePaletteColorLookupTableData ||
+            instance.SegmentedBluePaletteColorLookupTableData ||
+            instance.segmentedBluePaletteColorLookupTableData;
+        }
+
+        // Defensive fallback: ensure required fields exist for external loaders
+        if (metadata.samplesPerPixel == null) metadata.samplesPerPixel = 1;
+        if (!metadata.photometricInterpretation) metadata.photometricInterpretation = 'MONOCHROME2';
+        if (metadata.rows == null) metadata.rows = undefined;
+        if (metadata.columns == null) metadata.columns = undefined;
 
         break;
       case WADO_IMAGE_LOADER_TAGS.VOI_LUT_MODULE:

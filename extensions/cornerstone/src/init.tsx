@@ -266,8 +266,7 @@ export default async function init({
         } else if (min !== undefined && max !== undefined) {
           const range = max - min;
           const ww = range > 0 ? range : 256;
-          const wc = min + ww / 2;
-          instance.WindowCenter = wc;
+          instance.WindowCenter = min + ww / 2;
           instance.WindowWidth = ww;
           instance._windowLevelPatched = true;
         }
@@ -285,10 +284,12 @@ export default async function init({
 
         // If we detected color from the image loader
         if (isColorImage && !samplesPerPixel) {
-          samplesPerPixel = 3;
+          // Prefer instance metadata if available (e.g. PALETTE COLOR has 1 sample but is color)
+          samplesPerPixel = instance.SamplesPerPixel || 3;
         }
         if (isColorImage && !photometricInterpretation) {
-          photometricInterpretation = 'RGB';
+          // Prefer instance metadata if available (e.g. PALETTE COLOR)
+          photometricInterpretation = instance.PhotometricInterpretation || 'RGB';
         }
 
         // If image loader didn't provide values, check what's already in the instance metadata
@@ -356,6 +357,72 @@ export default async function init({
 
         instance._pixelModulePatched = true;
 
+        // --- Palette Color Lookup Table ---
+        if (photometricInterpretation === 'PALETTE COLOR') {
+          const paletteTags = [
+            'redPaletteColorLookupTableDescriptor',
+            'greenPaletteColorLookupTableDescriptor',
+            'bluePaletteColorLookupTableDescriptor',
+            'redPaletteColorLookupTableData',
+            'greenPaletteColorLookupTableData',
+            'bluePaletteColorLookupTableData',
+            'paletteColorLookupTableUID'
+          ];
+
+          const dicomTags = [
+            'RedPaletteColorLookupTableDescriptor',
+            'GreenPaletteColorLookupTableDescriptor',
+            'BluePaletteColorLookupTableDescriptor',
+            'RedPaletteColorLookupTableData',
+            'GreenPaletteColorLookupTableData',
+            'BluePaletteColorLookupTableData',
+            'PaletteColorLookupTableUID'
+          ];
+
+          let patchedPalette = false;
+          paletteTags.forEach((tag, index) => {
+            const dicomTag = dicomTags[index];
+
+            // 1. Check camelCase (standard Cornerstone)
+            if (effectiveImage[tag] !== undefined && instance[dicomTag] === undefined) {
+              instance[dicomTag] = effectiveImage[tag];
+              patchedPalette = true;
+            }
+
+            // 2. Check PascalCase (some loaders/parsers)
+            if (effectiveImage[dicomTag] !== undefined && instance[dicomTag] === undefined) {
+              instance[dicomTag] = effectiveImage[dicomTag];
+              patchedPalette = true;
+            }
+          });
+
+          // 3. Check inside 'data' property (dicomParser dataset or similar)
+          if (effectiveImage.data) {
+             paletteTags.forEach((tag, index) => {
+                const dicomTag = dicomTags[index];
+                // Check camelCase in data
+                if (effectiveImage.data[tag] !== undefined && instance[dicomTag] === undefined) {
+                  instance[dicomTag] = effectiveImage.data[tag];
+                  patchedPalette = true;
+                }
+                // Check PascalCase in data
+                if (effectiveImage.data[dicomTag] !== undefined && instance[dicomTag] === undefined) {
+                  instance[dicomTag] = effectiveImage.data[dicomTag];
+                  patchedPalette = true;
+                }
+             });
+          }
+
+          if (patchedPalette) {
+            console.log('✅ Patched Palette Color Lookup Table data from image loader');
+          } else {
+             console.warn('⚠️ PALETTE COLOR image but missing palette data in loaded image', {
+                keys: Object.keys(effectiveImage),
+                dataKeys: effectiveImage.data ? Object.keys(effectiveImage.data) : 'no data'
+             });
+          }
+        }
+
         // Extra debug logging
         console.log('✅ Final pixel module values:', {
           SamplesPerPixel: samplesPerPixel,
@@ -379,6 +446,82 @@ export default async function init({
           highBit: effectiveImage.highBit ?? effectiveImage.color ? 7 : 15,
         };
         imagePixelFormatCache.set(imageId, pixelFormat);
+
+        // Patch additional pixel module fields if available from loaded image
+        if (effectiveImage.bitsAllocated !== undefined) {
+          instance.BitsAllocated = effectiveImage.bitsAllocated;
+        }
+        if (effectiveImage.bitsStored !== undefined) {
+          instance.BitsStored = effectiveImage.bitsStored;
+        }
+        if (effectiveImage.highBit !== undefined) {
+          instance.HighBit = effectiveImage.highBit;
+        }
+        if (effectiveImage.pixelRepresentation !== undefined) {
+          instance.PixelRepresentation = effectiveImage.pixelRepresentation;
+        }
+        if (effectiveImage.planarConfiguration !== undefined) {
+          instance.PlanarConfiguration = effectiveImage.planarConfiguration;
+        }
+
+        // Patch additional VOI/rescale fields
+        if (effectiveImage.rescaleIntercept !== undefined && instance.RescaleIntercept === undefined) {
+          instance.RescaleIntercept = effectiveImage.rescaleIntercept;
+        }
+        if (effectiveImage.rescaleSlope !== undefined && instance.RescaleSlope === undefined) {
+          instance.RescaleSlope = effectiveImage.rescaleSlope;
+        }
+        if (effectiveImage.rescaleType !== undefined && instance.RescaleType === undefined) {
+          instance.RescaleType = effectiveImage.rescaleType;
+        }
+
+        // Patch pixel value range for better VOI calculations
+        if (effectiveImage.minPixelValue !== undefined) {
+          instance.SmallestPixelValue = effectiveImage.minPixelValue;
+        }
+        if (effectiveImage.maxPixelValue !== undefined) {
+          instance.LargestPixelValue = effectiveImage.maxPixelValue;
+        }
+
+        // Patch lossy compression info if available
+        if (effectiveImage.lossyImageCompression !== undefined) {
+          instance.LossyImageCompression = effectiveImage.lossyImageCompression;
+        }
+        if (effectiveImage.lossyImageCompressionRatio !== undefined) {
+          instance.LossyImageCompressionRatio = effectiveImage.lossyImageCompressionRatio;
+        }
+        if (effectiveImage.lossyImageCompressionMethod !== undefined) {
+          instance.LossyImageCompressionMethod = effectiveImage.lossyImageCompressionMethod;
+        }
+
+        // Patch frame-related fields for cine/multi-frame
+        if (effectiveImage.frameTime !== undefined && instance.FrameTime === undefined) {
+          instance.FrameTime = effectiveImage.frameTime;
+        }
+        if (effectiveImage.numberOfFrames !== undefined) {
+          instance.NumberOfFrames = effectiveImage.numberOfFrames;
+        }
+
+        // Patch ultrasound calibration if available
+        if (effectiveImage.sequenceOfUltrasoundRegions !== undefined) {
+          instance.SequenceOfUltrasoundRegions = effectiveImage.sequenceOfUltrasoundRegions;
+        }
+
+        // Patch slice location if available
+        if (effectiveImage.sliceLocation !== undefined && instance.SliceLocation === undefined) {
+          instance.SliceLocation = effectiveImage.sliceLocation;
+        }
+        if (effectiveImage.sliceThickness !== undefined && instance.SliceThickness === undefined) {
+          instance.SliceThickness = effectiveImage.sliceThickness;
+        }
+        if (effectiveImage.spacingBetweenSlices !== undefined && instance.SpacingBetweenSlices === undefined) {
+          instance.SpacingBetweenSlices = effectiveImage.spacingBetweenSlices;
+        }
+
+        // Patch frame of reference if available
+        if (effectiveImage.frameOfReferenceUID !== undefined && instance.FrameOfReferenceUID === undefined) {
+          instance.FrameOfReferenceUID = effectiveImage.frameOfReferenceUID;
+        }
 
         console.log(
           `✅ Patched pixel format: ${samplesPerPixel} components, ${photometricInterpretation}`
@@ -461,7 +604,7 @@ export default async function init({
       seriesReEvaluated.add(seriesInstanceUID);
 
       // Notify the display set service of the update
-      displaySetService.setDisplaySets(displaySetService.getActiveDisplaySets());
+      // displaySetService.setDisplaySets(displaySetService.getActiveDisplaySets());
     } catch (error) {
       console.error('Error re-evaluating reconstructability:', error);
     }

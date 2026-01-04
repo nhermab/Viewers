@@ -55,6 +55,11 @@ function _getPaletteColor(paletteColorLookupTableData, lutDescriptor) {
     return paletteColorLookupTableData.palette;
   }
 
+  // Handle plain array (already parsed)
+  if (Array.isArray(paletteColorLookupTableData)) {
+    return paletteColorLookupTableData;
+  }
+
   if (paletteColorLookupTableData.InlineBinary) {
     try {
       const uint8Array = Uint8Array.from(atob(paletteColorLookupTableData.InlineBinary), c =>

@@ -10,6 +10,7 @@ const metadataProvider = classes.MetadataProvider;
 // --- Interfaces ---
 
 export interface ExtractedSeriesMetadata {
+  // Image Pixel Module
   Rows?: number;
   Columns?: number;
   BitsAllocated?: number;
@@ -19,18 +20,73 @@ export interface ExtractedSeriesMetadata {
   SamplesPerPixel?: number;
   PhotometricInterpretation?: string;
   PlanarConfiguration?: number;
+  PixelAspectRatio?: number;
+  SmallestPixelValue?: number;
+  LargestPixelValue?: number;
+
+  // Image Plane Module
   PixelSpacing?: number[];
+  ImagerPixelSpacing?: number[];
   ImageOrientationPatient?: number[];
   ImagePositionPatient?: number[];
   SliceThickness?: number;
   SpacingBetweenSlices?: number;
+  SliceLocation?: number;
+
+  // VOI LUT Module
   WindowCenter?: number | number[];
   WindowWidth?: number | number[];
   RescaleIntercept?: number;
   RescaleSlope?: number;
   RescaleType?: string;
+  VOILUTFunction?: string;
+
+  // Frame of Reference
   FrameOfReferenceUID?: string;
+
+  // Multi-frame
   NumberOfFrames?: number;
+  FrameTime?: number;
+  FrameIncrementPointer?: string;
+  PerFrameFunctionalGroupsSequence?: any[];
+  SharedFunctionalGroupsSequence?: any[];
+
+  // Image Identification
+  ImageType?: string[];
+  AcquisitionNumber?: number;
+  AcquisitionDate?: string;
+  AcquisitionTime?: string;
+  InstanceNumber?: number;
+
+  // Lossy compression info
+  LossyImageCompression?: string;
+  LossyImageCompressionRatio?: number;
+  LossyImageCompressionMethod?: string;
+
+  // Palette Color Lookup Table
+  RedPaletteColorLookupTableDescriptor?: number[];
+  GreenPaletteColorLookupTableDescriptor?: number[];
+  BluePaletteColorLookupTableDescriptor?: number[];
+  RedPaletteColorLookupTableData?: number[];
+  GreenPaletteColorLookupTableData?: number[];
+  BluePaletteColorLookupTableData?: number[];
+  PaletteColorLookupTableUID?: string;
+
+  // Segmented Palette Color Lookup Table
+  SegmentedRedPaletteColorLookupTableData?: number[];
+  SegmentedGreenPaletteColorLookupTableData?: number[];
+  SegmentedBluePaletteColorLookupTableData?: number[];
+
+  // Ultrasound calibration
+  SequenceOfUltrasoundRegions?: any[];
+
+  // PET specific
+  CorrectedImage?: string[];
+  Units?: string;
+  DecayCorrection?: string;
+  RadiopharmaceuticalInformationSequence?: any[];
+  FrameReferenceTime?: number;
+  ActualFrameDuration?: number;
 }
 
 interface MadoMetadataOptions {
@@ -51,6 +107,7 @@ const prefetchedImageCache = new Map<string, ArrayBuffer>();
 /**
  * Maps dcmjs internal 'Value' arrays to our Metadata interface.
  * dcmjs stores data as: dict['TAG'].Value = [val1, val2]
+ * Note: This is a simplified version; the full extraction is done in prefetchSeriesMetadata.ts
  */
 function mapDictToMetadata(dict: any): ExtractedSeriesMetadata {
   const getV = (tag: string) => {
@@ -66,6 +123,7 @@ function mapDictToMetadata(dict: any): ExtractedSeriesMetadata {
   };
 
   const metadata: ExtractedSeriesMetadata = {
+    // Image Pixel Module
     Rows: getV('00280010'),
     Columns: getV('00280011'),
     BitsAllocated: getV('00280100'),
@@ -75,16 +133,51 @@ function mapDictToMetadata(dict: any): ExtractedSeriesMetadata {
     SamplesPerPixel: getV('00280002'),
     PhotometricInterpretation: getV('00280004'),
     PlanarConfiguration: getV('00280006'),
+    PixelAspectRatio: getV('00280034'),
+    SmallestPixelValue: getV('00280106'),
+    LargestPixelValue: getV('00280107'),
+
+    // Image Plane Module
     PixelSpacing: getArr('00280030'),
+    ImagerPixelSpacing: getArr('00181164'),
     ImageOrientationPatient: getArr('00200037'),
     ImagePositionPatient: getArr('00200032'),
     SliceThickness: getV('00180050'),
     SpacingBetweenSlices: getV('00180088'),
+    SliceLocation: getV('00201041'),
+
+    // VOI LUT Module
     RescaleIntercept: getV('00281052'),
     RescaleSlope: getV('00281053'),
     RescaleType: getV('00281054'),
+    VOILUTFunction: getV('00281056'),
+
+    // Frame of Reference
     FrameOfReferenceUID: getV('00200052'),
+
+    // Multi-frame
     NumberOfFrames: getV('00280008'),
+    FrameTime: getV('00181063'),
+    FrameIncrementPointer: getV('00280009'),
+
+    // Image Identification
+    ImageType: getArr('00080008') as unknown as string[],
+    AcquisitionNumber: getV('00200012'),
+    AcquisitionDate: getV('00080022'),
+    AcquisitionTime: getV('00080032'),
+    InstanceNumber: getV('00200013'),
+
+    // Lossy compression
+    LossyImageCompression: getV('00282110'),
+    LossyImageCompressionRatio: getV('00282112'),
+    LossyImageCompressionMethod: getV('00282114'),
+
+    // PET specific
+    CorrectedImage: getArr('00280051') as unknown as string[],
+    Units: getV('00541001'),
+    DecayCorrection: getV('00541102'),
+    FrameReferenceTime: getV('00541300'),
+    ActualFrameDuration: getV('00181242'),
   };
 
   const wc = getArr('00281050');
@@ -327,8 +420,26 @@ export default async function retrieveMadoMetadata(options: MadoMetadataOptions)
     const prefetchOptions = { ...options, dicomWebClient: client } as MadoMetadataOptions;
     const metaMap = await prefetchSeriesFirstImages(displaySets, prefetchOptions);
 
+    console.log('📦 [MADO] Prefetch results:', {
+      displaySetCount: displaySets.length,
+      metaMapSize: metaMap.size,
+      seriesWithMeta: Array.from(metaMap.keys()).map(k => k.substring(0, 20) + '...'),
+    });
+
     for (const ds of displaySets) {
       const seriesMeta = metaMap.get(ds.seriesInstanceUID);
+
+      console.log(`📋 [MADO] Processing series ${ds.seriesInstanceUID.substring(0, 20)}...`, {
+        hasSeriesMeta: !!seriesMeta,
+        instanceCount: ds.instances?.length,
+        metaFields: seriesMeta ? {
+          hasRows: !!seriesMeta.Rows,
+          hasColumns: !!seriesMeta.Columns,
+          hasIPP: !!seriesMeta.ImagePositionPatient,
+          hasIOP: !!seriesMeta.ImageOrientationPatient,
+          hasPixelSpacing: !!seriesMeta.PixelSpacing,
+        } : null,
+      });
 
       // Apply extracted series-level metadata to each instance in the display set
       if (seriesMeta && Array.isArray(ds.instances)) {
@@ -395,8 +506,141 @@ export default async function retrieveMadoMetadata(options: MadoMetadataOptions)
           if (seriesMeta.RescaleType !== undefined) instance.RescaleType = seriesMeta.RescaleType;
           if (seriesMeta.FrameOfReferenceUID !== undefined) instance.FrameOfReferenceUID = seriesMeta.FrameOfReferenceUID;
 
+          // Palette Color Lookup Table - essential for PALETTE COLOR photometric interpretation
+          if (seriesMeta.RedPaletteColorLookupTableDescriptor !== undefined) {
+            instance.RedPaletteColorLookupTableDescriptor = seriesMeta.RedPaletteColorLookupTableDescriptor;
+            instance.redPaletteColorLookupTableDescriptor = seriesMeta.RedPaletteColorLookupTableDescriptor;
+          }
+          if (seriesMeta.GreenPaletteColorLookupTableDescriptor !== undefined) {
+            instance.GreenPaletteColorLookupTableDescriptor = seriesMeta.GreenPaletteColorLookupTableDescriptor;
+            instance.greenPaletteColorLookupTableDescriptor = seriesMeta.GreenPaletteColorLookupTableDescriptor;
+          }
+          if (seriesMeta.BluePaletteColorLookupTableDescriptor !== undefined) {
+            instance.BluePaletteColorLookupTableDescriptor = seriesMeta.BluePaletteColorLookupTableDescriptor;
+            instance.bluePaletteColorLookupTableDescriptor = seriesMeta.BluePaletteColorLookupTableDescriptor;
+          }
+          if (seriesMeta.RedPaletteColorLookupTableData !== undefined) {
+            instance.RedPaletteColorLookupTableData = seriesMeta.RedPaletteColorLookupTableData;
+            instance.redPaletteColorLookupTableData = seriesMeta.RedPaletteColorLookupTableData;
+          }
+          if (seriesMeta.GreenPaletteColorLookupTableData !== undefined) {
+            instance.GreenPaletteColorLookupTableData = seriesMeta.GreenPaletteColorLookupTableData;
+            instance.greenPaletteColorLookupTableData = seriesMeta.GreenPaletteColorLookupTableData;
+          }
+          if (seriesMeta.BluePaletteColorLookupTableData !== undefined) {
+            instance.BluePaletteColorLookupTableData = seriesMeta.BluePaletteColorLookupTableData;
+            instance.bluePaletteColorLookupTableData = seriesMeta.BluePaletteColorLookupTableData;
+          }
+          if (seriesMeta.PaletteColorLookupTableUID !== undefined) {
+            instance.PaletteColorLookupTableUID = seriesMeta.PaletteColorLookupTableUID;
+            instance.paletteColorLookupTableUID = seriesMeta.PaletteColorLookupTableUID;
+          }
+
+          // Segmented Palette Color Lookup Table copy (0028,1221-1223)
+          if (seriesMeta.SegmentedRedPaletteColorLookupTableData !== undefined) {
+            instance.SegmentedRedPaletteColorLookupTableData = seriesMeta.SegmentedRedPaletteColorLookupTableData;
+            instance.segmentedRedPaletteColorLookupTableData = seriesMeta.SegmentedRedPaletteColorLookupTableData;
+          }
+          if (seriesMeta.SegmentedGreenPaletteColorLookupTableData !== undefined) {
+            instance.SegmentedGreenPaletteColorLookupTableData = seriesMeta.SegmentedGreenPaletteColorLookupTableData;
+            instance.segmentedGreenPaletteColorLookupTableData = seriesMeta.SegmentedGreenPaletteColorLookupTableData;
+          }
+          if (seriesMeta.SegmentedBluePaletteColorLookupTableData !== undefined) {
+            instance.SegmentedBluePaletteColorLookupTableData = seriesMeta.SegmentedBluePaletteColorLookupTableData;
+            instance.segmentedBluePaletteColorLookupTableData = seriesMeta.SegmentedBluePaletteColorLookupTableData;
+          }
+
+          // NEW: Additional metadata fields for complete DICOM-JSON parity
+
+          // Pixel module extras
+          if (seriesMeta.PixelAspectRatio !== undefined) instance.PixelAspectRatio = seriesMeta.PixelAspectRatio;
+          if (seriesMeta.SmallestPixelValue !== undefined) instance.SmallestPixelValue = seriesMeta.SmallestPixelValue;
+          if (seriesMeta.LargestPixelValue !== undefined) instance.LargestPixelValue = seriesMeta.LargestPixelValue;
+
+          // Image plane extras
+          if (seriesMeta.ImagerPixelSpacing !== undefined) {
+            instance.ImagerPixelSpacing = seriesMeta.ImagerPixelSpacing;
+            instance.imagerPixelSpacing = seriesMeta.ImagerPixelSpacing;
+          }
+          if (seriesMeta.SliceLocation !== undefined) {
+            // Calculate per-slice SliceLocation if we have the first slice's value
+            const baseSliceLocation = seriesMeta.SliceLocation;
+            instance.SliceLocation = baseSliceLocation + idx * sliceSpacing;
+            instance.sliceLocation = instance.SliceLocation;
+          }
+
+          // VOI LUT extras
+          if (seriesMeta.VOILUTFunction !== undefined) instance.VOILUTFunction = seriesMeta.VOILUTFunction;
+
+          // Multi-frame extras
+          if (seriesMeta.FrameTime !== undefined) instance.FrameTime = seriesMeta.FrameTime;
+          if (seriesMeta.FrameIncrementPointer !== undefined) instance.FrameIncrementPointer = seriesMeta.FrameIncrementPointer;
+          if (seriesMeta.NumberOfFrames !== undefined) {
+            instance.NumberOfFrames = seriesMeta.NumberOfFrames;
+            instance.numberOfFrames = seriesMeta.NumberOfFrames;
+          }
+          if (seriesMeta.PerFrameFunctionalGroupsSequence !== undefined) {
+            instance.PerFrameFunctionalGroupsSequence = seriesMeta.PerFrameFunctionalGroupsSequence;
+          }
+          if (seriesMeta.SharedFunctionalGroupsSequence !== undefined) {
+            instance.SharedFunctionalGroupsSequence = seriesMeta.SharedFunctionalGroupsSequence;
+          }
+
+          // Image identification
+          if (seriesMeta.ImageType !== undefined) instance.ImageType = seriesMeta.ImageType;
+          if (seriesMeta.AcquisitionNumber !== undefined) instance.AcquisitionNumber = seriesMeta.AcquisitionNumber;
+          if (seriesMeta.AcquisitionDate !== undefined) instance.AcquisitionDate = seriesMeta.AcquisitionDate;
+          if (seriesMeta.AcquisitionTime !== undefined) instance.AcquisitionTime = seriesMeta.AcquisitionTime;
+
+          // Lossy compression info
+          if (seriesMeta.LossyImageCompression !== undefined) instance.LossyImageCompression = seriesMeta.LossyImageCompression;
+          if (seriesMeta.LossyImageCompressionRatio !== undefined) instance.LossyImageCompressionRatio = seriesMeta.LossyImageCompressionRatio;
+          if (seriesMeta.LossyImageCompressionMethod !== undefined) instance.LossyImageCompressionMethod = seriesMeta.LossyImageCompressionMethod;
+
+          // Ultrasound calibration sequence
+          if (seriesMeta.SequenceOfUltrasoundRegions !== undefined) {
+            instance.SequenceOfUltrasoundRegions = seriesMeta.SequenceOfUltrasoundRegions;
+          }
+
+          // PET specific fields
+          if (seriesMeta.CorrectedImage !== undefined) instance.CorrectedImage = seriesMeta.CorrectedImage;
+          if (seriesMeta.Units !== undefined) instance.Units = seriesMeta.Units;
+          if (seriesMeta.DecayCorrection !== undefined) instance.DecayCorrection = seriesMeta.DecayCorrection;
+          if (seriesMeta.FrameReferenceTime !== undefined) instance.FrameReferenceTime = seriesMeta.FrameReferenceTime;
+          if (seriesMeta.ActualFrameDuration !== undefined) instance.ActualFrameDuration = seriesMeta.ActualFrameDuration;
+          if (seriesMeta.RadiopharmaceuticalInformationSequence !== undefined) {
+            instance.RadiopharmaceuticalInformationSequence = seriesMeta.RadiopharmaceuticalInformationSequence;
+          }
+
           // Mark that this instance has prefetched metadata so synthesis gives it priority
           instance._prefetchedMetadata = true;
+
+          // CRITICAL: Mark geometry as patched if we have valid geometry from prefetched metadata
+          // This allows 3D reconstruction to work without waiting for images to load in viewport
+          const hasValidGeometry =
+            instance.Rows && instance.Columns &&
+            Array.isArray(instance.ImagePositionPatient) && instance.ImagePositionPatient.length === 3 &&
+            Array.isArray(instance.ImageOrientationPatient) && instance.ImageOrientationPatient.length === 6 &&
+            Array.isArray(instance.PixelSpacing) && instance.PixelSpacing.length === 2;
+
+          if (hasValidGeometry) {
+            instance._geometryPatched = true;
+            console.log(`✅ [MADO] Instance ${idx} marked _geometryPatched=true`, {
+              Rows: instance.Rows,
+              Columns: instance.Columns,
+              IPP: instance.ImagePositionPatient,
+              IOP: instance.ImageOrientationPatient?.slice(0, 3),
+              PixelSpacing: instance.PixelSpacing,
+            });
+          } else {
+            console.warn(`⚠️ [MADO] Instance ${idx} missing geometry fields:`, {
+              Rows: instance.Rows,
+              Columns: instance.Columns,
+              hasIPP: !!instance.ImagePositionPatient,
+              hasIOP: !!instance.ImageOrientationPatient,
+              hasPixelSpacing: !!instance.PixelSpacing,
+            });
+          }
 
           // Ensure wadoRoot/wadoUri markers are present for downstream synthesis
           instance.wadoRoot = instance.wadoRoot || wadoRoot;
@@ -420,7 +664,6 @@ export default async function retrieveMadoMetadata(options: MadoMetadataOptions)
         const synthesizedInstances: any[] = [];
         if (Array.isArray(ds.instances)) {
           ds.instances.forEach((instance: any, idx: number) => {
-            const frame = instance.NumberOfFrames || instance.numberOfFrames || 1;
             const instanceForImageId = {
               ...instance,
               StudyInstanceUID: ds.studyInstanceUID,
