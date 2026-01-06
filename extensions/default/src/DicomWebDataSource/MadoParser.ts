@@ -205,8 +205,17 @@ class MadoParser {
     // 3. Also look in Content Sequence (0040,A730) for additional metadata
     const contentSequence = dataset['0040A730']?.Value || [];
 
-    // Helper to extract text value from content sequence by code
-    const findTextValueByCode = (sequence, codeValue) => {
+  // DDD Code Constants (from MADO specification):
+  // ddd002: Series Description
+  // ddd003: Series Date
+  // ddd004: Series Time
+  // ddd005: Series Number
+  // ddd006: Series Instance UID
+  // ddd007: Number of Series Related Instances
+  // ddd008: Instance Number
+
+  // Helper to extract text value from content sequence by code
+  const findTextValueByCode = (sequence, codeValue) => {
       const item = sequence.find(
         item =>
           item['0040A043']?.Value?.[0]?.['00080100']?.Value?.[0] === codeValue &&
@@ -304,10 +313,10 @@ class MadoParser {
                   if (groupSeriesUID === seriesInstanceUID) {
                     seriesDate = findTextValueByCode(groupContent, 'ddd003');
                     seriesTime = findTextValueByCode(groupContent, 'ddd004');
-                    seriesNumber = findTextValueByCode(groupContent, 'ddd010');
+                    seriesNumber = findTextValueByCode(groupContent, 'ddd005');
                     numberOfSeriesRelatedInstances = findNumericValueByCode(
                       groupContent,
-                      'ddd013'
+                      'ddd007'
                     );
 
                     // Extract instance-level metadata from IMAGE items in the group
@@ -320,7 +329,7 @@ class MadoParser {
 
                           // Look in the nested ContentSequence for instance number
                           const imageContent = imageItem['0040A730']?.Value || [];
-                          const instanceNumberText = findTextValueByCode(imageContent, 'ddd005');
+                          const instanceNumberText = findTextValueByCode(imageContent, 'ddd008');
 
                           if (sopInstanceUID && instanceNumberText) {
                             const parsed = parseInt(instanceNumberText, 10);
